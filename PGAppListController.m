@@ -12,9 +12,8 @@
 // 纯 UIViewController 没有这些方法，调用会抛 unrecognized selector → 设置崩溃。
 #import <UIKit/UIKit.h>
 #import "PGCommon.h"
-#import "PGPrivate.h"
 
-@interface PGAppListController : PSViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
+@interface PGAppListController : UIViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
 @end
 
 @implementation PGAppListController {
@@ -40,6 +39,15 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"注入 App 列表";
+
+    // 关闭按钮（仅当本页被 modal 呈现时；push 场景由系统提供返回按钮）
+    if (!(self.navigationController && self.navigationController.viewControllers.count > 1)) {
+        self.navigationItem.leftBarButtonItem =
+            [[UIBarButtonItem alloc] initWithTitle:@"完成"
+                                             style:UIBarButtonItemStyleDone
+                                            target:self
+                                            action:@selector(pg_close)];
+    }
 
     CGRect b = self.view.bounds;
     if (b.size.width <= 0) b = CGRectMake(0, 0, 375, 667);
@@ -253,6 +261,15 @@
     @try {
         NSArray *list = [[[self pg_selected] allObjects] sortedArrayUsingSelector:@selector(compare:)];
         PGSetValue(PGKeyApps, list);
+    } @catch (NSException *e) {}
+}
+
+- (void)pg_close {
+    @try {
+        if (self.navigationController && self.navigationController.viewControllers.count > 1)
+            [self.navigationController popViewControllerAnimated:YES];
+        else
+            [self dismissViewControllerAnimated:YES completion:nil];
     } @catch (NSException *e) {}
 }
 

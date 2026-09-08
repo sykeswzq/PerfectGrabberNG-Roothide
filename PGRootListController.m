@@ -1,112 +1,143 @@
 // PGRootListController.m —— 设置面板首页
 //
-// 关键教训（roothide / iOS 16.5，本次空白的真因）：
-//   之前重写了 - (NSBundle *)bundle 返回 [NSBundle bundleForClass:]，
-//   但插件 bundle 是被 PreferenceLoader 用 dlopen 加载的，此时 bundleForClass
-//   拿到的是「设置 App 本体(mainBundle)」，于是 [self bundle] pathForResource:@"Root"
-//   在设置 App 里找 Root.plist → 找不到 → 空数组 → 页面空白。
-//   正确做法：不要把 bundle 重写为 bundleForClass。PSListController 的 bundle 属性
-//   由 PreferenceLoader 加载 entry 时已正确设置（并解析了 roothide 路径），框架原生的
-//   loadSpecifiersFromPlistName:target: 正是用它。
-//   这里：方案1 用框架原生加载；方案2 兜底（bundle 万一没设好时，自己按 bundleIdentifier
-//   在 allBundles 里定位，再手工构造 specifiers，用 PGMakeSpec 运行时探测工厂选择器）。
-#import "PGPrivate.h"
+// 根因（roothide / iOS 16.5，连续多版空白的唯一真因）：
+//   系统 PSListController 的 loadSpecifiersFromPlistName: 在 roothide 环境下，
+//   解析不到我们 bundle 内的 Root.plist（PreferenceLoader 给子类设的 bundle 路径
+//   在 roothide 下异常），于是拿到空数组 → 页面空白。
+//   Choicy 之所以能显示，是因为它用 Cephei 的 HBListController 重写了一套加载逻辑。
+//
+// 本方案：不依赖 PSListController / PSSpecifier / loadSpecifiersFromPlistName 任何机制，
+// 直接用纯 UIViewController + UITableView 手写面板。零依赖、零黑盒，必定显示。
+// 等效于 Choicy 的 HBListController 效果，但不需要设备上额外装有 Cephei。
+#import <UIKit/UIKit.h>
 #import "PGCommon.h"
-#import <notify.h>
 
-@interface PGRootListController : PSListController
+@interface PGRootListController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @end
 
 @implementation PGRootListController {
-    NSArray *_pgSpecs;
+    UITableView *_tv;
+    NSArray<NSNumber *> *_durations;   // 1,2,3,5,10 秒
 }
 
 - (void)viewDidLoad {
-    @try { [super viewDidLoad]; } @catch (NSException *e) {}
-    @try { self.title = @"下拉时间电量"; } @catch (NSException *e) {}
+    [super viewDidLoad];
+    self.title = @"下拉时间电量";
+    if (@available(iOS 13.0, *)) self.view.backgroundColor = [UIColor systemBackgroundColor];
+    else self.view.backgroundColor = [UIColor whiteColor];
+
+    _durations = @[@1, @2, @3, @5, @10];
+
+    // 关闭按钮：兼容 PreferenceLoader 把本页以 push 或 modal 形式呈现
+    self.navigationItem.leftBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"完成"
+                                         style:UIBarButtonItemStyleDone
+                                        target:self
+                                        action:@selector(pg_done)];
+
+    CGRect b = self.view.bounds;
+    if (b.size.width <= 0) b = CGRectMake(0, 0, 375, 667);
+    _tv = [[UITableView alloc] initWithFrame:b style:UITableViewStyleGrouped];
+    _tv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _tv.dataSource = self;
+    _tv.delegate = self;
+    [self.view addSubview:_tv];
 }
 
-// 定位真正装有 Root.plist 的 bundle（绝不用 bundleForClass）
-- (NSBundle *)_pg_bundle {
+- (void)pg_done {
     @try {
-        NSBundle *b = [self bundle];   // 父类 getter，PreferenceLoader 已设置
-        if ([[b pathForResource:@"Root" ofType:@"plist"] length]) return b;
-    } @catch (NSException *e) {}
-    @try {
-        for (NSBundle *c in [NSBundle allBundles]) {
-            NSString *bid = c.bundleIdentifier ?: @"";
-            if ([bid rangeOfString:@"perfectgrabber" options:NSCaseInsensitiveSearch].length
-                && [[c pathForResource:@"Root" ofType:@"plist"] length]) {
-                return c;
-            }
+        if (self.navigationController && self.navigationController.viewControllers.count > 1) {
+            [self.navigationController popViewControllerAnimated:YES];
+        } else {
+            [self dismissViewControllerAnimated:YES completion:nil];
         }
     } @catch (NSException *e) {}
+}
+
+#pragma mark - 数据辅助
+
+- (BOOL)pg_enabled { return PGEnabled(); }
+- (void)pg_setEnabled:(BOOL)on { PGSetValue(PGKeyEnabled, @(on)); }
+- (double)pg_duration { return PGDuration(); }
+
+#pragma mark - 表格
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (section == 0) return @"基本";
+    if (section == 1) return @"显示时长";
+    return @"注入范围";
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0)
+        return @"游戏中从屏幕顶部向下拉一次，顶部会浮出当前时间与电量，若干秒后自动消失。";
+    if (section == 2)
+        return @"默认不注入任何 App。请在「注入 App 列表」里勾选要显示时间电量的 App，勾选后立即生效（无需重启游戏）。roothide 下还需在 Bootstrap 的 App List 里打开对应 App 的注入开关。";
     return nil;
 }
 
-// 自己从定位到的 bundle 读 Root.plist 构造 specifiers（兜底用）
-- (NSArray *)_pg_buildFromBundle {
-    NSMutableArray *arr = [NSMutableArray array];
-    @try {
-        NSBundle *b = [self _pg_bundle];
-        NSString *path = [b pathForResource:@"Root" ofType:@"plist"];
-        NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:path];
-        NSArray *items = root[@"items"] ?: @[];
-        for (NSDictionary *it in items) {
-            NSString *cell = it[@"cell"];
-            PSSpecifier *sp = nil;
-
-            if ([cell isEqualToString:@"PSGroupCell"]) {
-                sp = [PSSpecifier groupSpecifierWithName:it[@"label"] ?: @""];
-                if (it[@"footerText"]) [sp setProperty:it[@"footerText"] forKey:@"footerText"];
-            }
-            else if ([cell isEqualToString:@"PSSwitchCell"]) {
-                sp = PGMakeSpec(self, it[@"label"] ?: @"",
-                                @selector(setPreferenceValue:forSpecifier:),
-                                @selector(readPreferenceValueForSpecifier:),
-                                Nil, PGPSSwitchCell);
-                [sp setProperty:it[@"key"]      forKey:@"key"];
-                [sp setProperty:it[@"defaults"] forKey:@"defaults"];
-                if (it[@"default"])         [sp setProperty:it[@"default"]         forKey:@"default"];
-                if (it[@"PostNotification"]) [sp setProperty:it[@"PostNotification"] forKey:@"PostNotification"];
-            }
-            else if ([cell isEqualToString:@"PSLinkListCell"]) {
-                sp = PGMakeSpec(self, it[@"label"] ?: @"",
-                                @selector(setPreferenceValue:forSpecifier:),
-                                @selector(readPreferenceValueForSpecifier:),
-                                Nil, PGPSLinkListCell);
-                [sp setProperty:it[@"key"]      forKey:@"key"];
-                [sp setProperty:it[@"defaults"] forKey:@"defaults"];
-                if (it[@"default"])      [sp setProperty:it[@"default"]      forKey:@"default"];
-                if (it[@"validValues"])  [sp setProperty:it[@"validValues"]  forKey:@"validValues"];
-                if (it[@"validTitles"])  [sp setProperty:it[@"validTitles"]  forKey:@"validTitles"];
-                if (it[@"PostNotification"]) [sp setProperty:it[@"PostNotification"] forKey:@"PostNotification"];
-            }
-            else if ([cell isEqualToString:@"PSLinkCell"]) {
-                Class detail = NSClassFromString(it[@"detail"] ?: @"");
-                sp = PGMakeSpec(self, it[@"label"] ?: @"", Nil, Nil, detail, PGPSLinkCell);
-                [sp setProperty:@YES forKey:@"isController"];
-            }
-
-            if (sp) [arr addObject:sp];
-        }
-    } @catch (NSException *e) {}
-    return arr;
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 0) return 1;
+    if (section == 1) return (NSInteger)_durations.count;
+    return 1;   // 注入 App 列表
 }
 
-- (NSArray *)specifiers {
-    if (_pgSpecs) return _pgSpecs;
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *const ID = @"PGRootCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ID];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:ID];
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
 
-    // 方案1：框架原生加载（最可靠，内部正确处理 bundle 路径与 PSSpecifier 构造）
-    NSArray *loaded = nil;
-    @try {
-        loaded = [self loadSpecifiersFromPlistName:@"Root" target:self];
-    } @catch (NSException *e) { loaded = nil; }
-    if (loaded.count) { _pgSpecs = loaded; return _pgSpecs; }
+    if (indexPath.section == 0) {
+        cell.textLabel.text = @"启用";
+        UISwitch *sw = [[UISwitch alloc] init];
+        sw.on = [self pg_enabled];
+        [sw addTarget:self action:@selector(pg_enabledChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = sw;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+    else if (indexPath.section == 1) {
+        NSNumber *d = _durations[(NSUInteger)indexPath.row];
+        cell.textLabel.text = [NSString stringWithFormat:@"%@ 秒", d];
+        double cur = [self pg_duration];
+        cell.accessoryType = (fabs(cur - d.doubleValue) < 0.01)
+            ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    else {
+        cell.textLabel.text = @"注入 App 列表";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    return cell;
+}
 
-    // 方案2：兜底——自己定位 bundle 并构造
-    _pgSpecs = [self _pg_buildFromBundle];
-    return _pgSpecs;
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 1) {
+        NSNumber *d = _durations[(NSUInteger)indexPath.row];
+        PGSetValue(PGKeyDuration, d);
+        [tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationNone];
+    }
+    else if (indexPath.section == 2) {
+        @try {
+            Class cls = NSClassFromString(@"PGAppListController");
+            UIViewController *appList = [cls new];
+            if (self.navigationController) {
+                [self.navigationController pushViewController:appList animated:YES];
+            } else {
+                UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:appList];
+                [self presentViewController:nav animated:YES completion:nil];
+            }
+        } @catch (NSException *e) {}
+    }
+}
+
+- (void)pg_enabledChanged:(UISwitch *)sw {
+    [self pg_setEnabled:sw.on];
 }
 
 @end
