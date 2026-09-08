@@ -47,8 +47,8 @@ jobs:
           m=$(xxd -p -l4 "$DYLIB" | tr -d '\n')
           [ "$m" = "cafebabe" ] || { echo "ERROR: dylib magic=$m"; exit 1; }
           ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "com.apple.UIKit" || { echo "ERROR: filter 不是 UIKit"; exit 1; }
-          echo "  (2) OK dylib 头正常 + filter=com.apple.UIKit"
+          /usr/libexec/PlistBuddy -c "Print :Filter:Classes:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "UIApplication" || { echo "ERROR: filter 不是 UIApplication"; exit 1; }
+          echo "  (2) OK dylib 头正常 + filter=UIApplication"
           echo "全部校验通过"
 
       - name: Upload artifact

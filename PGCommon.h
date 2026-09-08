@@ -96,13 +96,24 @@ NS_INLINE BOOL PGEnabled(void) {
     return YES;
 }
 
+NS_INLINE BOOL PGIsSystemProcess(void) {
+    // 只服务用户 App；系统进程（含 SpringBoard / 后台 daemon）一律排除，
+    // 从根上避免 tweak 在系统进程里创建浮层导致卡死或界面冲突。
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (bid.length == 0) return YES;                       // 无 bundle ID 的守护进程
+    if ([bid isEqualToString:@"com.apple.springboard"]) return YES;
+    if ([bid isEqualToString:@"com.apple.backboardd"]) return YES;
+    if ([bid hasPrefix:@"com.apple."]) return YES;         // 所有系统 App
+    return NO;
+}
+
 NS_INLINE BOOL PGCurrentAppSelected(void) {
+    // 默认不注入任何 App；只有在设置列表里勾选的 App 才生效（白名单模式）。
+    if (PGIsSystemProcess()) return NO;
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (bid.length == 0) return NO;
     NSArray *apps = PGValue(PGKeyApps);
-    // 列表为空 = 开箱即用，对所有已注入的 App 生效；
-    // 一旦勾选了 App，就转为白名单（仅勾选的生效）。
-    if (![apps isKindOfClass:[NSArray class]] || apps.count == 0) return YES;
+    if (![apps isKindOfClass:[NSArray class]] || apps.count == 0) return NO;
     return [apps containsObject:bid];
 }
 

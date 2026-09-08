@@ -63,8 +63,12 @@
     if (!PGEnabled() || !PGCurrentAppSelected()) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
+      @try {
         if (_window) return;
-        if ([UIApplication sharedApplication] == nil) return;
+        UIApplication *app = [UIApplication sharedApplication];
+        if (app == nil) return;
+        // 仅前台时安装；后台/非活跃状态下创建窗口极易引发异常
+        if (app.applicationState != UIApplicationStateActive) return;
 
         UIWindow *w = nil;
         if (@available(iOS 13.0, *)) {
@@ -147,12 +151,13 @@
         ]];
         _label = lb;
 
+        // 仅保留下拉手势；cancelsTouchesInView=NO 确保不吞掉游戏的触摸
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
+        pan.cancelsTouchesInView = NO;
         [strip addGestureRecognizer:pan];
-        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(pg_show)];
-        [strip addGestureRecognizer:tap];
 
         [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+      } @catch (NSException *e) {}
     });
 }
 
@@ -235,6 +240,7 @@
 __attribute__((constructor))
 static void PGInit(void) {
     @autoreleasepool {
+        if (PGIsSystemProcess()) return;   // 系统进程不加载任何逻辑，彻底避免卡死
         // 先注册通知监听：这样在设置里勾选 App / 打开开关后能立刻生效，不用重启游戏
         int token = 0;
         notify_register_dispatch(PGNotifyName, &token, dispatch_get_main_queue(), ^(int t) {

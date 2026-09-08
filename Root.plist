@@ -63,7 +63,7 @@
 			<key>label</key>
 			<string>注入范围</string>
 			<key>footerText</key>
-			<string>列表为空时，对所有已开启注入的 App 生效（开箱即用）；勾选后仅对勾选的 App 生效。roothide 下还需在 Bootstrap 的 App List 里打开对应 App 的注入开关。</string>
+			<string>默认不注入任何 App。请在「注入 App 列表」里勾选要显示时间电量的 App，勾选后立即生效（无需重启游戏）。roothide 下还需在 Bootstrap 的 App List 里打开对应 App 的注入开关。</string>
 		</dict>
 		<dict>
 			<key>cell</key>

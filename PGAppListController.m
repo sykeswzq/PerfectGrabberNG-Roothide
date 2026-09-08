@@ -202,7 +202,7 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return [NSString stringWithFormat:@"已选 %lu 个 App（列表为空 = 全部生效）",
+    return [NSString stringWithFormat:@"已选 %lu 个 App（默认不注入，勾选才生效）",
             (unsigned long)[self pg_selected].count];
 }
 
