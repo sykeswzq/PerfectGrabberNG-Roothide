@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>title</key>
+	<string>下拉时间电量</string>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>基本</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>启用</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>defaults</key>
+			<string>com.sykes.perfectgrabberng</string>
+			<key>default</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>com.sykes.perfectgrabberng.reload</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>label</key>
+			<string>显示时长</string>
+			<key>key</key>
+			<string>duration</string>
+			<key>defaults</key>
+			<string>com.sykes.perfectgrabberng</string>
+			<key>default</key>
+			<integer>2</integer>
+			<key>validValues</key>
+			<array>
+				<integer>1</integer>
+				<integer>2</integer>
+				<integer>3</integer>
+				<integer>5</integer>
+				<integer>10</integer>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>1 秒</string>
+				<string>2 秒</string>
+				<string>3 秒</string>
+				<string>5 秒</string>
+				<string>10 秒</string>
+			</array>
+			<key>PostNotification</key>
+			<string>com.sykes.perfectgrabberng.reload</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>注入范围</string>
+			<key>footerText</key>
+			<string>列表为空时，对所有已开启注入的 App 生效（开箱即用）；勾选后仅对勾选的 App 生效。roothide 下还需在 Bootstrap 的 App List 里打开对应 App 的注入开关。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>label</key>
+			<string>注入 App 列表</string>
+			<key>detail</key>
+			<string>PGAppListController</string>
+			<key>isController</key>
+			<true/>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>游戏中从屏幕顶部向下拉一次，顶部会浮出当前时间与电量，若干秒后自动消失。</string>
+		</dict>
+	</array>
+</dict>
+</plist>

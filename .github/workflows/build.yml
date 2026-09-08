@@ -1,0 +1,68 @@
+name: Build PerfectGrabberNG roothide deb
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: |
+          brew install dpkg
+          brew install ldid-procursus 2>/dev/null || brew install procursus/ldid/ldid 2>/dev/null || { echo "ERROR: ldid install failed"; exit 1; }
+          command -v ldid >/dev/null 2>&1 || { echo "ERROR: ldid not available"; exit 1; }
+          echo "ldid OK"
+
+      - name: Build
+        run: bash build.sh
+
+      - name: Verify deb
+        run: |
+          set -e
+          DEB=$(ls com.sykes.perfectgrabberng_*_iphoneos-arm64e.deb | head -1)
+          echo "deb: $DEB"
+          # (1) 路径必须根相对，不能有 ./var/jb 或 ./var/roothide 前缀
+          if dpkg-deb -c "$DEB" | grep -E '\./var/(jb|roothide)/'; then
+            echo "ERROR: 检测到 ./var/jb 或 ./var/roothide 前缀"; exit 1
+          fi
+          dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.dylib' || { echo "ERROR: 缺 dylib"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceBundles/PerfectGrabberNG\.bundle/PerfectGrabberNG' || { echo "ERROR: 缺设置面板 bundle"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceLoader/Preferences/PerfectGrabberNG\.plist' || { echo "ERROR: 缺 PreferenceLoader 入口"; exit 1; }
+          echo "  (1) OK 路径与文件齐全"
+          # (2) 解包校验签名与 filter
+          rm -rf /tmp/pgcheck && mkdir -p /tmp/pgcheck
+          dpkg-deb -x "$DEB" /tmp/pgcheck
+          DYLIB=/tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+          m=$(xxd -p -l4 "$DYLIB" | tr -d '\n')
+          [ "$m" = "cafebabe" ] || { echo "ERROR: dylib magic=$m"; exit 1; }
+          ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
+          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "com.apple.UIKit" || { echo "ERROR: filter 不是 UIKit"; exit 1; }
+          echo "  (2) OK dylib 头正常 + filter=com.apple.UIKit"
+          echo "全部校验通过"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: perfectgrabberng-deb
+          path: "*.deb"
+          retention-days: 30
+
+      - name: Commit deb back
+        run: |
+          git config user.email "sykeswzq@users.noreply.github.com"
+          git config user.name "sykeswzq"
+          git add "*.deb" || true
+          git commit -m "chore: build ${GITHUB_RUN_NUMBER} [skip ci]" || echo "no changes"
+          git pull --rebase origin main || true
+          git push origin main || true
