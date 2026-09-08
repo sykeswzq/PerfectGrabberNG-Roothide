@@ -60,7 +60,7 @@
                                  target:self
                                  set:@selector(setPreferenceValue:forSpecifier:)
                                  get:@selector(readPreferenceValueForSpecifier:)
-                                 detail:Nil cell:PGSPSLinkListCell edit:Nil];
+                                 detail:Nil cell:PGPSLinkListCell edit:Nil];
                 [sp setProperty:it[@"key"]      forKey:@"key"];
                 [sp setProperty:it[@"defaults"] forKey:@"defaults"];
                 if (it[@"default"])      [sp setProperty:it[@"default"]      forKey:@"default"];
