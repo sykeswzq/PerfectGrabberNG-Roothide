@@ -45,22 +45,20 @@
                 if (it[@"footerText"]) [sp setProperty:it[@"footerText"] forKey:@"footerText"];
             }
             else if ([cell isEqualToString:@"PSSwitchCell"]) {
-                sp = [PSSpecifier preferenceSpecifierNamed:it[@"label"] ?: @""
-                                 target:self
-                                 set:@selector(setPreferenceValue:forSpecifier:)
-                                 get:@selector(readPreferenceValueForSpecifier:)
-                                 detail:Nil cell:PGPSSwitchCell edit:Nil];
+                sp = PGMakeSpec(self, it[@"label"] ?: @"",
+                                @selector(setPreferenceValue:forSpecifier:),
+                                @selector(readPreferenceValueForSpecifier:),
+                                Nil, PGPSSwitchCell);
                 [sp setProperty:it[@"key"]      forKey:@"key"];
                 [sp setProperty:it[@"defaults"] forKey:@"defaults"];
                 if (it[@"default"])         [sp setProperty:it[@"default"]         forKey:@"default"];
                 if (it[@"PostNotification"]) [sp setProperty:it[@"PostNotification"] forKey:@"PostNotification"];
             }
             else if ([cell isEqualToString:@"PSLinkListCell"]) {
-                sp = [PSSpecifier preferenceSpecifierNamed:it[@"label"] ?: @""
-                                 target:self
-                                 set:@selector(setPreferenceValue:forSpecifier:)
-                                 get:@selector(readPreferenceValueForSpecifier:)
-                                 detail:Nil cell:PGPSLinkListCell edit:Nil];
+                sp = PGMakeSpec(self, it[@"label"] ?: @"",
+                                @selector(setPreferenceValue:forSpecifier:),
+                                @selector(readPreferenceValueForSpecifier:),
+                                Nil, PGPSLinkListCell);
                 [sp setProperty:it[@"key"]      forKey:@"key"];
                 [sp setProperty:it[@"defaults"] forKey:@"defaults"];
                 if (it[@"default"])      [sp setProperty:it[@"default"]      forKey:@"default"];
@@ -70,8 +68,7 @@
             }
             else if ([cell isEqualToString:@"PSLinkCell"]) {
                 Class detail = NSClassFromString(it[@"detail"] ?: @"");
-                sp = [PSSpecifier preferenceSpecifierNamed:it[@"label"] ?: @""
-                                 target:self set:Nil get:Nil detail:detail cell:PGPSLinkCell edit:Nil];
+                sp = PGMakeSpec(self, it[@"label"] ?: @"", Nil, Nil, detail, PGPSLinkCell);
                 [sp setProperty:@YES forKey:@"isController"];
             }
 

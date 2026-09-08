@@ -58,10 +58,21 @@ NS_INLINE PSSpecifier * _Nullable PGGroupSpec(NSString *_Nullable name) {
 
 // 7 参 specifier 构造（performSelector 最多 2 参，必须用 NSInvocation）
 // cell 参数在 iOS 13+ 是 NSInteger(8B)、iOS 12- 是 int(4B)，按运行时编码自适应
+// 关键：PSSpecifier 的工厂选择器在 iOS 版本间有差异
+//   （新版叫 specifierWithName:… ，旧版叫 preferenceSpecifierNamed:…）。
+//   运行时探测，哪个存在用哪个，避免「unrecognized selector」被 @try 吞掉后页面空白。
+NS_INLINE SEL _Nullable PGSpecifierFactorySEL(void) {
+    Class c = NSClassFromString(@"PSSpecifier");
+    if (c != Nil && [c respondsToSelector:@selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:)])
+        return @selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:);
+    return NSSelectorFromString(@"specifierWithName:target:set:get:detail:cell:edit:");
+}
+
 NS_INLINE PSSpecifier * _Nullable PGMakeSpec(id target, NSString *name, SEL setSel, SEL getSel, Class detail, NSInteger cell) {
     Class c = NSClassFromString(@"PSSpecifier");
     if (c == Nil) return nil;
-    SEL sel = @selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:);
+    SEL sel = PGSpecifierFactorySEL();
+    if (![c respondsToSelector:sel]) return nil;
     NSMethodSignature *sig = [c methodSignatureForSelector:sel];
     if (!sig) return nil;
     @try {
