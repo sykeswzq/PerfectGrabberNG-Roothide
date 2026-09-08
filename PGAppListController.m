@@ -6,12 +6,15 @@
 //   这里改为【普通 UIViewController】，完全自控视图，绝不和 Preferences 框架
 //   的表视图产生冲突，列表一定能正常显示。
 //
-// 由 Root.plist 的 PSLinkCell(detail=PGAppListController, isController=true) 推入，
-// Preferences 会把任意 UIViewController 压入设置导航栈，返回按钮与标题自动生效。
+// 由 Root.plist 的 PSLinkCell(detail=PGAppListController, isController=true) 推入。
+// 这里继承 PSViewController（而非纯 UIViewController）：PSListController 把 detail 控制器
+// push 进导航栈时会调用 setRootController:/setParentController: 等 PSViewController 方法，
+// 纯 UIViewController 没有这些方法，调用会抛 unrecognized selector → 设置崩溃。
 #import <UIKit/UIKit.h>
 #import "PGCommon.h"
+#import "PGPrivate.h"
 
-@interface PGAppListController : UIViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
+@interface PGAppListController : PSViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
 @end
 
 @implementation PGAppListController {

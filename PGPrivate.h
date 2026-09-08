@@ -33,6 +33,11 @@ typedef NS_ENUM(NSInteger, PGCellType) {
 @interface PSViewController : UIViewController
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
 - (id)readPreferenceValue:(PSSpecifier *)specifier;
+// PSListController 把 detail 控制器 push 进导航栈时会调用，普通 UIViewController 没有会崩
+- (void)setRootController:(id)rootController;
+- (void)setParentController:(id)parentController;
+- (id)rootController;
+- (id)parentController;
 @end
 
 @interface PSListController : PSViewController
