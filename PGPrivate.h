@@ -41,6 +41,10 @@ typedef NS_ENUM(NSInteger, PGCellType) {
 @end
 
 @interface PSListController : PSViewController
+// PSListController 运行时本就有 bundle 属性（PreferenceLoader 加载 entry 时已设置，
+// 并解析 roothide 路径）；这里只声明，避免子类调用 [self bundle] 编译报 selector 错。
+- (NSBundle *)bundle;
+- (void)setBundle:(NSBundle *)bundle;
 - (instancetype)initForContentSize:(CGSize)size;
 - (NSArray *)specifiers;
 - (void)reloadSpecifiers;
