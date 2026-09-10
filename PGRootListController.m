@@ -70,7 +70,7 @@
 
 #pragma mark - 表格
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (section == 0) return @"基本";
@@ -87,7 +87,7 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 1;   // 启用
+    if (section == 0) return 2;   // 启用 + 调试模式
     if (section == 1) return (NSInteger)_durations.count;
     return 1;   // 注入 App 列表
 }
@@ -105,6 +105,14 @@
             UISwitch *sw = [[UISwitch alloc] init];
             sw.on = [self pg_enabled];
             [sw addTarget:self action:@selector(pg_enabledChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else {
+            cell.textLabel.text = @"调试模式";
+            cell.detailTextLabel.text = @"强制所有App显示浮层";
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = [self pg_debug];
+            [sw addTarget:self action:@selector(pg_debugChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = sw;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
@@ -148,6 +156,11 @@
 
 - (void)pg_enabledChanged:(UISwitch *)sw {
     [self pg_setEnabled:sw.on];
+}
+
+- (BOOL)pg_debug { return PGDebugEnabled(); }
+- (void)pg_debugChanged:(UISwitch *)sw {
+    PGSetValue(PGKeyDebug, @(sw.on));
 }
 
 @end

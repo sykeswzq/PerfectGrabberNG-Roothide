@@ -1,5 +1,0 @@
-#!/bin/sh
-# Post-install: 重启 runningboardd 使新 filter 生效
-# 对齐 Choicy 范式（https://github.com/opa334/Choicy）
-killall runningboardd 2>/dev/null
-exit 0
