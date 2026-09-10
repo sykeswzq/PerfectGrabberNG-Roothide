@@ -78,20 +78,22 @@ jobs:
           echo "$IDS" | grep -q "@loader_path/.jbroot" \
             || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范: $IDS"; exit 1; }
           ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          # filter 可以是 Bundles 白名单或 Executables 白名单
-          # V2.0.13：改用 Executables 匹配进程名，更可靠（不依赖 Bundle ID 解析）
-          # 注意：PlistBuddy 在 macOS 上可能无法正确解析 iOS plist，改用 grep 直接检查 XML
+          # filter 支持三种模式：
+          # 1. Bundles 白名单（AltList 手动勾选）
+          # 2. Executables 白名单（进程名匹配）
+          # 3. 空 filter（V2.0.16+：零自动注入，用 roothideinject 手动指定）
           FILTER_PLIST=/tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist
           if grep -q "<key>Bundles</key>" "$FILTER_PLIST"; then
-            # Bundles 白名单模式：检查是否包含占位符（用户需手动在 AltList 开启）
             grep -q "com.sykes.pgng.disabled" "$FILTER_PLIST" || { echo "ERROR: Bundles 白名单为空或未设置占位符"; exit 1; }
             echo "  (2b) OK filter=Bundles 白名单模式"
           elif grep -q "<key>Executables</key>" "$FILTER_PLIST"; then
-            # Executables 白名单模式：直接匹配进程名
             grep -q "<string>GenshinImpact</string>" "$FILTER_PLIST" || { echo "ERROR: Executables 白名单未包含 GenshinImpact"; exit 1; }
-            echo "  (2b) OK filter=Executables 白名单模式（匹配 GenshinImpact/WutheringWaves/YuanShen）"
+            echo "  (2b) OK filter=Executables 白名单模式"
+          elif grep -q "<dict>\s*$" "$FILTER_PLIST" && grep -q "^<\/dict>$" "$FILTER_PLIST"; then
+            # 空 filter（V2.0.16+）：零自动注入，用 roothideinject 手动指定
+            echo "  (2c) OK filter=空 filter（roothideinject 手动注入模式）"
           else
-            echo "ERROR: filter 格式不支持（需要 Bundles 或 Executables 白名单）"
+            echo "ERROR: filter 格式不支持（需要 Bundles/Executables 白名单或空 filter）"
             exit 1
           fi
           echo "  (2) OK dylib 头正常 + install name 规范 + filter 白名单模式正确"
