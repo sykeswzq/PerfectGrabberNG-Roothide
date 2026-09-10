@@ -4,14 +4,12 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.13：改用 Executables 白名单，直接用进程名匹配，不依赖 Bundle ID -->
-		<!-- 原神 iOS 进程名为 GenshinImpact，鸣潮为 Wuthering Waves -->
-		<key>Executables</key>
-		<array>
-			<string>GenshinImpact</string>
-			<string>WutheringWaves</string>
-			<string>YuanShen</string>
-		</array>
+		<!-- V2.0.16：去掉 Executables 白名单，改为空 filter。
+		     不再自动注入任何 App；需要注入时用 roothideinject 手动指定目标 App：
+		     roothideinject PerfectGrabberNG.dylib GenshinImpact
+		     roothideinject PerfectGrabberNG.dylib WutheringWaves
+		     插件内部根据 bundleID + 设置面板勾选决定浮层是否显示。
+		-->
 	</dict>
 </dict>
 </plist>
