@@ -6,13 +6,15 @@
 //   在 roothide 下异常），于是拿到空数组 → 页面空白。
 //   Choicy 之所以能显示，是因为它用 Cephei 的 HBListController 重写了一套加载逻辑。
 //
-// 本方案：不依赖 PSListController / PSSpecifier / loadSpecifiersFromPlistName 任何机制，
-// 直接用纯 UIViewController + UITableView 手写面板。零依赖、零黑盒，必定显示。
-// 等效于 Choicy 的 HBListController 效果，但不需要设备上额外装有 Cephei。
+// 本方案：不依赖 PSListController / loadSpecifiersFromPlistName 的 specifier 机制，
+// 直接用 PSViewController（补齐 PreferenceLoader 必需的 setParentController/setRootController/
+// setSpecifier 注入点，避免 unrecognized selector 闪退）+ UITableView 手写面板。
+// 零黑盒、必定显示；等效 Choicy 的 HBListController 效果，但不依赖设备上装有 Cephei。
 #import <UIKit/UIKit.h>
 #import "PGCommon.h"
+#import "PGPrivate.h"   // PSViewController（含 setParentController:/setRootController:/setSpecifier:）
 
-@interface PGRootListController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@interface PGRootListController : PSViewController <UITableViewDataSource, UITableViewDelegate>
 @end
 
 @implementation PGRootListController {
@@ -54,6 +56,12 @@
     } @catch (NSException *e) {}
 }
 
+// 兜底：某些旧版 PreferenceLoader 会用 initForContentSize: 实例化控制器，
+// PSViewController 没有该方法，补一个免得又崩在实例化这一步。
+- (instancetype)initForContentSize:(CGSize)size {
+    return [self init];
+}
+
 #pragma mark - 数据辅助
 
 - (BOOL)pg_enabled { return PGEnabled(); }
@@ -72,14 +80,14 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0)
-        return @"游戏中从屏幕顶部向下拉一次，顶部会浮出当前时间与电量，若干秒后自动消失。";
+        return @"游戏中从屏幕顶部向下拉一次，顶部会浮出当前时间与电量，若干秒后自动消失。\n⚠️ roothide 必须先在 Bootstrap 的 App List 里打开该游戏的「注入」开关，否则 dylib 不会被加载（勾选无效）。";
     if (section == 2)
         return @"默认不注入任何 App。请在「注入 App 列表」里勾选要显示时间电量的 App，勾选后立即生效（无需重启游戏）。roothide 下还需在 Bootstrap 的 App List 里打开对应 App 的注入开关。";
     return nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 1;
+    if (section == 0) return 2;   // 启用 + 调试模式
     if (section == 1) return (NSInteger)_durations.count;
     return 1;   // 注入 App 列表
 }
@@ -92,12 +100,22 @@
     cell.accessoryType = UITableViewCellAccessoryNone;
 
     if (indexPath.section == 0) {
-        cell.textLabel.text = @"启用";
-        UISwitch *sw = [[UISwitch alloc] init];
-        sw.on = [self pg_enabled];
-        [sw addTarget:self action:@selector(pg_enabledChanged:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = sw;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"启用";
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = [self pg_enabled];
+            [sw addTarget:self action:@selector(pg_enabledChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else {
+            cell.textLabel.text = @"调试模式";
+            cell.detailTextLabel.text = @"强制所有App显示浮层";
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = [self pg_debug];
+            [sw addTarget:self action:@selector(pg_debugChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        }
     }
     else if (indexPath.section == 1) {
         NSNumber *d = _durations[(NSUInteger)indexPath.row];
@@ -138,6 +156,11 @@
 
 - (void)pg_enabledChanged:(UISwitch *)sw {
     [self pg_setEnabled:sw.on];
+}
+
+- (BOOL)pg_debug { return PGDebugEnabled(); }
+- (void)pg_debugChanged:(UISwitch *)sw {
+    PGSetValue(PGKeyDebug, @(sw.on));
 }
 
 @end

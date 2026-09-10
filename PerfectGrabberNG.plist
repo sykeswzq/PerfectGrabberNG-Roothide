@@ -4,9 +4,23 @@
 <dict>
 	<key>Filter</key>
 	<dict>
+		<!-- 通用匹配：所有 iOS App 都有 UIApplication 类，objc_getClass 在注入时机早期即可用，
+		     理论上匹配全部用户 App（游戏/微信等）。roothide 若用此键即可全局注入。 -->
 		<key>Classes</key>
 		<array>
 			<string>UIApplication</string>
+		</array>
+		<!-- 框架 Bundle 兜底：几乎所有 App 都加载 UIKit 等框架；roothide 注入器按
+		     CFBundleGetBundleWithIdentifier 匹配进程加载的框架，可命中全部用户 App。
+		     1.0.32 误用 Executables=[WeChat]（与 Classes 形成 AND，缩到只注入微信）导致
+		     游戏等非微信 App 无法注入；现改回 Bundles 框架兜底恢复通用匹配。
+		     系统进程（SpringBoard 等）由 PGInit 内 PGIsSystemProcess() 防护排除，避免安全模式。 -->
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.UIKit</string>
+			<string>com.apple.Foundation</string>
+			<string>com.apple.Security</string>
+			<string>com.apple.CoreFoundation</string>
 		</array>
 	</dict>
 </dict>

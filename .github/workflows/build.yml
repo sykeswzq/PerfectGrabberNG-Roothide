@@ -3,6 +3,8 @@ name: Build PerfectGrabberNG roothide deb
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "*.deb"
   workflow_dispatch:
 
 permissions:
@@ -19,10 +21,32 @@ jobs:
 
       - name: Install build tools
         run: |
-          brew install dpkg
-          brew install ldid-procursus 2>/dev/null || brew install procursus/ldid/ldid 2>/dev/null || { echo "ERROR: ldid install failed"; exit 1; }
+          command -v dpkg-deb >/dev/null 2>&1 || brew install dpkg
+          # ldid 三级兜底：brew 经常抽风（formulae 改名 / 仓库超时），
+          # 最后直接从 ProcursusTeam/ldid 的 release 拉预编译二进制，不依赖 brew。
+          if command -v ldid >/dev/null 2>&1; then
+            echo "ldid: 镜像已自带"
+          elif brew install ldid-procursus 2>/dev/null; then
+            echo "ldid: brew ldid-procursus"
+          elif brew install procursus/ldid/ldid 2>/dev/null; then
+            echo "ldid: brew tap procursus/ldid"
+          else
+            echo "ldid: brew 全部失败，改用预编译二进制"
+            TAG=v2.1.5-procursus7
+            if [ "$(uname -m)" = "arm64" ]; then ASSET=ldid_macosx_arm64; else ASSET=ldid_macosx_x86_64; fi
+            curl -sL --fail --max-time 180 -o /tmp/ldid_bin \
+              "https://github.com/ProcursusTeam/ldid/releases/download/$TAG/$ASSET"
+            mkdir -p "$HOME/.local/bin"
+            mv /tmp/ldid_bin "$HOME/.local/bin/ldid"
+            chmod +x "$HOME/.local/bin/ldid"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
           command -v ldid >/dev/null 2>&1 || { echo "ERROR: ldid not available"; exit 1; }
           echo "ldid OK"
+
+      - name: Clean stale debs
+        run: rm -f *.deb
 
       - name: Build
         run: bash build.sh
@@ -37,6 +61,8 @@ jobs:
             echo "ERROR: 检测到 ./var/jb 或 ./var/roothide 前缀"; exit 1
           fi
           dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.dylib' || { echo "ERROR: 缺 dylib"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.dylib\.roothidepatch$' || { echo "ERROR: 缺 .roothidepatch 标记"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.plist' || { echo "ERROR: 缺 filter plist"; exit 1; }
           dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceBundles/PerfectGrabberNG\.bundle/PerfectGrabberNG' || { echo "ERROR: 缺设置面板 bundle"; exit 1; }
           dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceLoader/Preferences/PerfectGrabberNG\.plist' || { echo "ERROR: 缺 PreferenceLoader 入口"; exit 1; }
           echo "  (1) OK 路径与文件齐全"
@@ -46,9 +72,15 @@ jobs:
           DYLIB=/tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
           m=$(xxd -p -l4 "$DYLIB" | tr -d '\n')
           [ "$m" = "cafebabe" ] || { echo "ERROR: dylib magic=$m"; exit 1; }
+          # install name 必须是 @loader_path/.jbroot（roothide 规范）
+          IDS="$(otool -D "$DYLIB" | grep -v 'architecture' | grep -v '^$' | sort -u)"
+          echo "  install name: $IDS"
+          echo "$IDS" | grep -q "@loader_path/.jbroot" \
+            || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范: $IDS"; exit 1; }
           ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          /usr/libexec/PlistBuddy -c "Print :Filter:Classes:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "UIApplication" || { echo "ERROR: filter 不是 UIApplication"; exit 1; }
-          echo "  (2) OK dylib 头正常 + filter=UIApplication"
+          # filter 必须是 Bundles 白名单（精准注入），不能退化为 Classes 全局注入
+          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "com.sykes.pgng.disabled" || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入）"; exit 1; }
+          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Bundles 精准注入"
           echo "全部校验通过"
 
       - name: Upload artifact

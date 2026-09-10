@@ -12,8 +12,9 @@
 // 纯 UIViewController 没有这些方法，调用会抛 unrecognized selector → 设置崩溃。
 #import <UIKit/UIKit.h>
 #import "PGCommon.h"
+#import "PGPrivate.h"   // PSViewController
 
-@interface PGAppListController : UIViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
+@interface PGAppListController : PSViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
 @end
 
 @implementation PGAppListController {
