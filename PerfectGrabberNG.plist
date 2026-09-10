@@ -4,10 +4,13 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.11：Bundles 白名单精准注入，杜绝安全模式 -->
-		<key>Bundles</key>
+		<!-- V2.0.13：改用 Executables 白名单，直接用进程名匹配，不依赖 Bundle ID -->
+		<!-- 原神 iOS 进程名为 GenshinImpact，鸣潮为 Wuthering Waves -->
+		<key>Executables</key>
 		<array>
-			<string>com.sykes.pgng.disabled</string>
+			<string>GenshinImpact</string>
+			<string>WutheringWaves</string>
+			<string>YuanShen</string>
 		</array>
 	</dict>
 </dict>
