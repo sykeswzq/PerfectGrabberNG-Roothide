@@ -4,12 +4,11 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.16：去掉 Executables 白名单，改为空 filter。
-		     不再自动注入任何 App；需要注入时用 roothideinject 手动指定目标 App：
-		     roothideinject PerfectGrabberNG.dylib GenshinImpact
-		     roothideinject PerfectGrabberNG.dylib WutheringWaves
-		     插件内部根据 bundleID + 设置面板勾选决定浮层是否显示。
-		-->
+		<!-- V2.0.11：Bundles 白名单精准注入，杜绝安全模式 -->
+		<key>Bundles</key>
+		<array>
+			<string>com.sykes.pgng.disabled</string>
+		</array>
 	</dict>
 </dict>
 </plist>

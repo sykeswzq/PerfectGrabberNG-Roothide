@@ -8,7 +8,7 @@
 #   4) roothide 是 rootless：只有 jbroot 下的 ./Library/... 可写；绝不能装到 ./usr/lib/...（系统只读分区）
 set -euo pipefail
 
-VER="2.0.16"
+VER="2.0.17"
 PKG="com.sykes.perfectgrabberng"
 OUT="${PKG}_${VER}_iphoneos-arm64e.deb"
 echo "版本号: $VER"
