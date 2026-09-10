@@ -1,55 +1,125 @@
-// PGCommon.h —— V2 tweak(dylib) 与 设置面板(bundle) 共用的偏好读写 + 进程判定
-// 两个模块分别编译，函数用 NS_INLINE 各存一份，互不影响。
-// 设计目标：精简、干净、在 roothide(rootless-compat) 下稳定运行，构造函数期不崩。
+// PGCommon.h —— tweak(dylib) 与 设置面板(bundle) 共用的偏好读写
+// 注意：两个模块分别编译，函数用 static inline 各存一份，互不影响。
 #import <Foundation/Foundation.h>
 #import <notify.h>
 #import <mach-o/dyld.h>
-#import <spawn.h>
-#import <sys/wait.h>
-#import <fcntl.h>
-#import <unistd.h>
-#import <errno.h>
-#import <string.h>
-#import <crt_externs.h>
 
-#define PGDomain     @"com.sykes.perfectgrabberng"
-#define PGKeyEnabled @"enabled"
-#define PGKeyApps    @"apps"
-#define PGKeyDuration @"duration"
-#define PGKeyKeepOn  @"keepOn"
-#define PGNotifyName "com.sykes.perfectgrabberng.reload"
+#define PGDomain        @"com.sykes.perfectgrabberng"
+#define PGKeyEnabled    @"enabled"
+#define PGKeyApps       @"apps"
+#define PGKeyDuration   @"duration"
+#define PGKeyDebug      @"debug"
+#define PGNotifyName    "com.sykes.perfectgrabberng.reload"
 
-// ---- jbroot 解析：优先 JBROOT 环境变量，其次 /var/jb 软链，兜底 /var/jb ----
-NS_INLINE NSString *PGJbRoot(void) {
-    const char *e = getenv("JBROOT");
-    if (e && e[0]) return [NSString stringWithUTF8String:e];
-    NSString *dest = [[NSFileManager defaultManager] destinationOfSymbolicLinkAtPath:@"/var/jb" error:NULL];
-    if (dest.length) return dest;
-    return @"/var/jb";
+NS_INLINE NSString *PGPrefsFileName(void) {
+    return @"com.sykes.perfectgrabberng.plist";
 }
 
-NS_INLINE NSString *PGPrefsReadPath(void) {
-    NSString *file = @"com.sykes.perfectgrabberng.plist";
+// roothide jbroot 内可写临时目录：注入后的 App Store 应用（沙盒）能写这里，
+// 而 /var/mobile/Documents 写不进。诊断日志统一放这里，避免「假阴性」。
+NS_INLINE NSString *PGJbTmp(void) {
+    NSString *jb = nil;
+    const char *e = getenv("JBROOT");
+    if (e && e[0]) jb = [NSString stringWithUTF8String:e];
+    if (!jb) {
+        NSString *dest = [[NSFileManager defaultManager] destinationOfSymbolicLinkAtPath:@"/var/jb" error:NULL];
+        if (dest.length > 0) jb = dest;
+    }
+    if (!jb) jb = @"/var/jb";
+    NSString *dir = [jb stringByAppendingPathComponent:@"tmp"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                               withIntermediateDirectories:YES
+                                                attributes:nil
+                                                     error:NULL];
+    return dir;
+}
+
+// 诊断日志落盘路径：优先 /var/mobile/Documents（roothide 下实测可写、用户易找），
+// 回退 /var/jb/tmp，再回退 /tmp。返回具体文件全路径。
+NS_INLINE NSString *PGDiagPath(NSString *name) {
+    NSArray *dirs = @[@"/var/mobile/Documents", @"/var/jb/tmp", @"/tmp"];
     NSFileManager *fm = [NSFileManager defaultManager];
-    // 标准世界可读路径优先（沙盒 App 也读得到），其次 jbroot 前缀
+    for (NSString *d in dirs) {
+        if ([fm isWritableFileAtPath:d]) return [d stringByAppendingPathComponent:name];
+    }
+    return [@"/var/mobile/Documents" stringByAppendingPathComponent:name];
+}
+
+// 多路径诊断写入：沙盒 App Store 应用写 /var/mobile/Documents 会静默失败（沙盒外不可写），
+// 造成「无日志」假阴性，让我们一直误判「dylib 没加载」。这里同时尝试多个候选目录
+// （含沙盒内 NSTemporaryDirectory，App Store 应用一定能写），任一可写即留痕，
+// 确保「到底有没有加载」变成确定性信号。返回成功写入的路径数组。
+NS_INLINE NSArray<NSString *> *PGWriteDiagAll(NSString *name, NSString *content) {
+    NSMutableArray *ok = [NSMutableArray array];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray *dirs = [NSMutableArray array];
+    @try {
+        NSString *nt = NSTemporaryDirectory();   // 沙盒内 tmp，App Store 应用必可写
+        if (nt.length) [dirs addObject:nt];
+    } @catch (NSException *e) {}
+    @try {
+        // 沙盒 Documents：App Store 应用可写，且不会被系统清理，Filza 进沙盒一步可找
+        NSArray *docPaths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        if (docPaths.count) { NSString *dd = docPaths[0]; if (dd.length) [dirs addObject:dd]; }
+    } @catch (NSException *e) {}
+    [dirs addObjectsFromArray:@[@"/var/jb/tmp", @"/var/mobile/Documents", @"/tmp"]];
+    for (NSString *d in dirs) {
+        @try {
+            BOOL isDir = NO;
+            if (![fm fileExistsAtPath:d isDirectory:&isDir] || !isDir) continue;
+            if (![fm isWritableFileAtPath:d]) continue;
+            NSString *p = [d stringByAppendingPathComponent:name];
+            NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+            if (fh) { [fh seekToEndOfFile]; [fh writeData:[content dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
+            else { [content writeToFile:p atomically:YES]; }
+            [ok addObject:p];
+        } @catch (NSException *e) {}
+    }
+    return ok;
+}
+
+// roothide / rootless 下偏好文件的候选根目录：优先真实 jbroot，其次 /var/jb 软链，最后兜底
+NS_INLINE NSArray<NSString *> *PGPrefsRoots(void) {
+    NSMutableArray *roots = [NSMutableArray array];
+    const char *env = getenv("JBROOT");
+    if (env && env[0]) [roots addObject:[NSString stringWithUTF8String:env]];
+    NSString *dest = [[NSFileManager defaultManager] destinationOfSymbolicLinkAtPath:@"/var/jb" error:NULL];
+    if (dest.length > 0) [roots addObject:dest];
+    [roots addObjectsFromArray:@[@"/var/jb", @"/var/roothide", @""]];
+    return roots;
+}
+
+// 读取路径：优先「标准世界可读路径」/var/mobile/Library/Preferences/<file>。
+// 关键：沙盒 App Store 应用（微信等）读不到 jbroot 前缀路径（/var/jb/...），
+// 而标准路径是 world-readable，所有 App 都能读。之前只读 jbroot 前缀导致
+// 沙盒 App 偏好全为默认（调试模式/启用/App列表都读不到）→ 浮层永不出现。
+// 这里标准路径优先，找不到再回退 jbroot（越狱 App/设置面板写的位置）。
+NS_INLINE NSString *PGPrefsReadPath(void) {
+    NSString *file = PGPrefsFileName();
+    NSFileManager *fm = [NSFileManager defaultManager];
     NSString *plain = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:file];
     if ([fm fileExistsAtPath:plain]) return plain;
-    NSString *jb = [PGJbRoot() stringByAppendingPathComponent:@"var/mobile/Library/Preferences/"];
-    NSString *p = [jb stringByAppendingPathComponent:file];
-    if ([fm fileExistsAtPath:p]) return p;
+    for (NSString *r in PGPrefsRoots()) {
+        NSString *p = [NSString stringWithFormat:@"%@/var/mobile/Library/Preferences/%@", r, file];
+        if ([fm fileExistsAtPath:p]) return p;
+    }
     return plain;
 }
 
+// 写入路径：优先「标准世界可读路径」/var/mobile/Library/Preferences/<file>。
+// 沙盒 App Store 应用只能读这个标准路径（读不到 jbroot 前缀），所以偏好必须写这里
+// 才能让微信等沙盒 App 看到「调试模式/启用/App列表」。找不到可写标准目录才回退 jbroot。
 NS_INLINE NSString *PGPrefsWritePath(void) {
-    NSString *file = @"com.sykes.perfectgrabberng.plist";
+    NSString *file = PGPrefsFileName();
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *plain = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:file];
-    NSString *dir = [plain stringByDeletingLastPathComponent];
-    if ([fm isWritableFileAtPath:dir]) return plain;
-    NSString *jbroot = PGJbRoot();
-    NSString *jbdir = [jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"];
-    if ([fm fileExistsAtPath:jbdir] && [fm isWritableFileAtPath:jbdir])
-        return [jbdir stringByAppendingPathComponent:file];
+    NSString *plainDir = [plain stringByDeletingLastPathComponent];
+    if ([fm fileExistsAtPath:plainDir] && [fm isWritableFileAtPath:plainDir]) return plain;
+    for (NSString *r in PGPrefsRoots()) {
+        NSString *p = [NSString stringWithFormat:@"%@/var/mobile/Library/Preferences/%@", r, file];
+        NSString *dir = [p stringByDeletingLastPathComponent];
+        if ([fm fileExistsAtPath:dir] && [fm isWritableFileAtPath:dir]) return p;
+    }
     return plain;
 }
 
@@ -58,43 +128,66 @@ NS_INLINE NSDictionary *PGPrefs(void) {
     return d ?: @{};
 }
 
+// 读取：文件通道优先，读不到再走 CFPreferences
+// （Root.plist 里 defaults 域的开关是 Preferences 框架直接写 CFPreferences 的）
 NS_INLINE id PGValue(NSString *key) {
     id v = nil;
     @try { v = PGPrefs()[key]; } @catch (NSException *e) {}
     if (v) return v;
-    CFTypeRef c = CFPreferencesCopyAppValue((__bridge CFStringRef)key, (__bridge CFStringRef)PGDomain);
+    CFTypeRef c = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
+                                            (__bridge CFStringRef)PGDomain);
     if (c) return CFBridgingRelease(c);
     return nil;
 }
 
+// 写入：两条通道都写，保证设置面板和插件进程都能读到
 NS_INLINE void PGSetValue(NSString *key, id value) {
     @try {
         NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:PGPrefs()];
-        if (value) d[key] = value; else [d removeObjectForKey:key];
+        if (value) d[key] = value;
+        else [d removeObjectForKey:key];
         [d writeToFile:PGPrefsWritePath() atomically:YES];
-    } @catch (NSException *e) {}
+    }
+    @catch (NSException *e) {}
     @try {
-        if (value) CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, (__bridge CFStringRef)PGDomain);
-        else CFPreferencesSetAppValue((__bridge CFStringRef)key, NULL, (__bridge CFStringRef)PGDomain);
+        if (value) {
+            CFPreferencesSetAppValue((__bridge CFStringRef)key,
+                                     (__bridge CFPropertyListRef)value,
+                                     (__bridge CFStringRef)PGDomain);
+        } else {
+            CFPreferencesSetAppValue((__bridge CFStringRef)key, NULL,
+                                     (__bridge CFStringRef)PGDomain);
+        }
         CFPreferencesAppSynchronize((__bridge CFStringRef)PGDomain);
-    } @catch (NSException *e) {}
+    }
+    @catch (NSException *e) {}
     notify_post(PGNotifyName);
 }
 
 NS_INLINE BOOL PGEnabled(void) {
     id v = PGValue(PGKeyEnabled);
-    if (v == nil) return YES;
+    if (v == nil) return YES;          // 默认开启
     if ([v respondsToSelector:@selector(boolValue)]) return [v boolValue];
     return YES;
 }
 
-// 可靠取 bundleID：mainBundle 取不到时用 _dyld_get_image_name(0) 回退解析 .app/Info.plist。
-// 关键：构造函数期 mainBundle 常未就绪（返回 nil），不能拿它当"系统进程"判断。
+NS_INLINE BOOL PGDebugEnabled(void) {
+    id v = PGValue(PGKeyDebug);
+    if (v && [v respondsToSelector:@selector(boolValue)]) return [v boolValue];
+    return NO;
+}
+
+// 可靠的 bundle ID 获取。
+// 关键坑：dylib 在「构造函数（加载期）」运行时 [NSBundle mainBundle] bundleIdentifier
+// 经常尚未初始化 -> 返回 nil（App Store 应用尤甚），导致被误判为系统进程而整体失效。
+// 这里在 mainBundle 取不到时，用 _dyld_get_image_name(0)（构造函数期一定可用）
+// 拿到主可执行文件路径，向上回退找 .app/Info.plist 解析 CFBundleIdentifier。
 NS_INLINE NSString *PGAppBundleID(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (bid.length > 0) return bid;
     @try {
         NSString *exe = nil;
+        // 启动路径（NSProcessInfo.arguments[0]）在构造函数期一定可用，优先于 _dyld
         NSArray *args = [[NSProcessInfo processInfo] arguments];
         if (args.count) exe = args[0];
         if (!exe.length) {
@@ -118,316 +211,31 @@ NS_INLINE NSString *PGAppBundleID(void) {
     return @"?";
 }
 
-// 系统/关键进程判定：拿不到 bid(="?") 不再武断当系统进程；apple 前缀一律排除。
 NS_INLINE BOOL PGIsSystemProcess(void) {
+    // 只服务用户 App；系统进程（含 SpringBoard / 后台 daemon）一律排除，
+    // 从根上避免 tweak 在系统进程里创建浮层导致卡死或界面冲突。
+    // 注意：取不到 bundleID(=@"?")时不再武断判为系统进程，否则会误杀所有
+    // 在构造函数期 mainBundle 未就绪的 App Store 应用（这正是之前「完全没效果」的根因）。
     NSString *bid = PGAppBundleID();
     if ([bid isEqualToString:@"?"]) return NO;
     if ([bid isEqualToString:@"com.apple.springboard"]) return YES;
-    if ([bid hasPrefix:@"com.apple."]) return YES;
+    if ([bid isEqualToString:@"com.apple.backboardd"]) return YES;
+    if ([bid hasPrefix:@"com.apple."]) return YES;         // 所有系统 App
     return NO;
 }
 
-// 越狱管理类 App 黑名单：这些 App 的 window 结构特殊，注入浮层易崩。
-NS_INLINE BOOL PGIsJailbreakManager(void) {
-    NSString *bid = PGAppBundleID();
-    NSArray *bl = @[@"org.coolstar.SileoStore", @"com.coolstar.SileoStore",
-                    @"com.rile.ios.Sileo", @"com.tigisoftware.Filza",
-                    @"com.saurik.Cydia", @"com.zebra.renati",
-                    @"com.opa334.root-hiding"];
-    for (NSString *b in bl) if ([bid isEqualToString:b]) return YES;
-    if ([bid hasPrefix:@"com.opa334."]) return YES;
-    return NO;
-}
-
-// 生效判定：默认【不注入任何 App】（全关），只在设置里勾选了「注入 App 列表」白名单后才命中勾选的 App。
-// （选哪个注哪个：未勾选 → 全机零注入 → 无闪退/无安全模式；勾选某 App 才注入该 App。）
-// 系统进程/越狱管理器始终不注入。
 NS_INLINE BOOL PGCurrentAppSelected(void) {
-    if (PGIsSystemProcess()) return NO;
-    if (PGIsJailbreakManager()) return NO;
+    // 默认不注入任何 App；只有在设置列表里勾选的 App 才生效（白名单模式）。
+    if (PGIsSystemProcess()) return NO;          // 系统进程永不注入，避免卡死
+    // 注意：调试模式不再「强制所有用户 App 注入浮层」。旧逻辑会让 Sileo/Filza 等
+    // 越狱管理 App 也创建浮层+弹窗，这些 App 的 window 结构特殊，浮层创建易触发
+    // bad-access（@try/@catch 抓不住）-> 进程闪退。调试模式现在只用于：
+    // ① 绕过总「启用」开关；② 浮层标签显示调试信息；③ 在「已勾选」App 弹确认窗。
     NSString *bid = PGAppBundleID();
     if ([bid isEqualToString:@"?"]) return NO;
-    id apps = PGValue(PGKeyApps);
-    if ([apps isKindOfClass:[NSArray class]]) {
-        NSArray *list = (NSArray *)apps;
-        if (list.count == 0) return NO;              // 明确「全关」
-        return [list containsObject:bid];
-    }
-    // 读不到偏好（第三方 App 有沙盒，读 /var/mobile/Library/Preferences 常被拒）→
-    // 但本 dylib 已经被加载，这本身就说明 filter 白名单放行了本 App，
-    // 而 filter 里只写「用户勾选过的 App」→ 判定为已勾选，避免出现"勾选了却没反应"。
-    return YES;
-}
-
-#pragma mark - 注入 filter 同步（根治安全模式的根本手段）
-
-// 从"自己被加载出来的真实路径"反推 jbroot：roothide 的 jbroot 是随机路径，写死 /var/jb
-// 不可靠；但 PreferenceBundle / dylib 自身的 image path 一定带着真实 jbroot 前缀。
-NS_INLINE NSString *PGJbRootFromSelf(void) {
-    @try {
-        uint32_t n = _dyld_image_count();
-        for (uint32_t i = 0; i < n; i++) {
-            const char *p = _dyld_get_image_name(i);
-            if (!p || !p[0]) continue;
-            NSString *s = [NSString stringWithUTF8String:p];
-            NSRange r = [s rangeOfString:@"/Library/PreferenceBundles/PerfectGrabberNG.bundle"];
-            if (r.location == NSNotFound)
-                r = [s rangeOfString:@"/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib"];
-            if (r.location != NSNotFound) return [s substringToIndex:r.location];
-        }
-    } @catch (NSException *e) {}
-    return nil;
-}
-
-// jbroot 候选（多来源并集）。
-// 2.0.8 关键修正：本机的 jbroot 是 /var/containers/Bundle/Application/.jbroot-XXXX，
-// 而 /var/jb 软链与 /var/jbroot 【根本不存在】—— 旧版候选里有一半是死路，
-// 且失败原因会被后面的候选覆盖，于是只能看到「目录不存在」这种误导信息。
-// 这里增加对 roothide 特征目录的直接扫描，不依赖软链，推断必定命中。
-NS_INLINE NSArray<NSString *> *PGJbRootCandidates(void) {
-    NSMutableArray *out = [NSMutableArray array];
-    NSMutableSet *seen = [NSMutableSet set];
-    void (^add)(NSString *) = ^(NSString *r) {
-        if (![r isKindOfClass:[NSString class]] || r.length == 0) return;
-        if ([seen containsObject:r]) return;
-        [seen addObject:r];
-        [out addObject:r];
-    };
-    const char *e = getenv("JBROOT");
-    if (e && e[0]) add([NSString stringWithUTF8String:e]);
-    add(PGJbRootFromSelf());
-    NSString *dest = [[NSFileManager defaultManager] destinationOfSymbolicLinkAtPath:@"/var/jb" error:NULL];
-    if (dest.length) add(dest);
-    @try {
-        // roothide 特征：jbroot 就挂在 Bundle 目录下，名字以 .jbroot- 开头
-        NSArray *names = [[NSFileManager defaultManager]
-                          contentsOfDirectoryAtPath:@"/var/containers/Bundle/Application" error:NULL];
-        for (NSString *n in names) {
-            if ([n hasPrefix:@".jbroot-"])
-                add([@"/var/containers/Bundle/Application" stringByAppendingPathComponent:n]);
-        }
-    } @catch (NSException *ex) {}
-    add(@"/var/jb");
-    add(@"/var/jbroot");
-    return out;
-}
-
-#define PGFilterRelPath    @"Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist"
-#define PGHelperRelPath    @"usr/bin/pgngfilter"
-// 中转文件：/var/mobile/Library/Preferences 是 mobile 可写目录（偏好本身就写这里，已验证）。
-// 期望内容先落到这里，再由 root helper 搬进 filter 位置（或直接软链过去）。
-#define PGFilterStagePath  @"/var/mobile/Library/Preferences/PGNG.filter.plist"
-#define PGFilterStatusPath @"/var/mobile/Library/Preferences/PGNG.filter.status"
-
-NS_INLINE NSArray<NSString *> *PGFilterPlistCandidates(void) {
-    NSMutableArray *out = [NSMutableArray array];
-    for (NSString *r in PGJbRootCandidates()) {
-        NSString *p = [r stringByAppendingPathComponent:PGFilterRelPath];
-        if (![out containsObject:p]) [out addObject:p];
-    }
-    return out;
-}
-
-NS_INLINE NSArray<NSString *> *PGHelperCandidates(void) {
-    NSMutableArray *out = [NSMutableArray array];
-    for (NSString *r in PGJbRootCandidates()) {
-        NSString *p = [r stringByAppendingPathComponent:PGHelperRelPath];
-        if (![out containsObject:p]) [out addObject:p];
-    }
-    return out;
-}
-
-// dylib 旁的注入 filter plist 路径（优先返回真实存在的那个）
-NS_INLINE NSString *PGFilterPlistPath(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *p in PGFilterPlistCandidates()) {
-        if ([fm fileExistsAtPath:p]) return p;
-    }
-    return PGFilterPlistCandidates().firstObject ?: @"";
-}
-
-NS_INLINE NSString *PGErrText(int err, NSString *what) {
-    return [NSString stringWithFormat:@"%@ errno=%d(%s)", what, err, strerror(err)];
-}
-
-// 真实写一次（不预检：沙盒下 fileExists / isWritable 会说谎，只有真写才知道）
-NS_INLINE BOOL PGRawWrite(NSData *data, NSString *path, NSString **errOut) {
-    @try {
-        int fd = open([path fileSystemRepresentation], O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        if (fd < 0) { if (errOut) *errOut = PGErrText(errno, @"open"); return NO; }
-        ssize_t w = write(fd, [data bytes], [data length]);
-        BOOL ok = (w == (ssize_t)[data length]);
-        if (!ok && errOut) *errOut = PGErrText(errno, @"write");
-        close(fd);
-        return ok;
-    } @catch (NSException *e) { if (errOut) *errOut = @"exception"; }
-    return NO;
-}
-
-// 调 setuid root helper；返回进程退出码（0=成功），并把 helper 写下的状态串出来
-NS_INLINE int PGRunHelper(NSArray<NSString *> *args, NSString **statusOut) {
-    @try {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *helper = nil;
-        for (NSString *h in PGHelperCandidates()) {
-            if ([fm isExecutableFileAtPath:h]) { helper = h; break; }
-        }
-        if (!helper) { if (statusOut) *statusOut = @"helper未找到"; return -1; }
-
-        [fm removeItemAtPath:PGFilterStatusPath error:NULL];
-        const char *cargs[8] = {0};
-        NSUInteger n = 0;
-        cargs[n++] = [helper fileSystemRepresentation];
-        for (NSString *a in args) { if (n < 6) cargs[n++] = [a fileSystemRepresentation]; }
-        cargs[n] = NULL;
-
-        pid_t pid = 0;
-        char **envp = *_NSGetEnviron();
-        int rc = posix_spawn(&pid, cargs[0], NULL, NULL, (char *const *)cargs, envp);
-        if (rc != 0) { if (statusOut) *statusOut = PGErrText(rc, @"spawn"); return -2; }
-        int st = 0;
-        if (waitpid(pid, &st, 0) < 0) { if (statusOut) *statusOut = @"waitpid失败"; return -3; }
-        int code = WIFEXITED(st) ? WEXITSTATUS(st) : -4;
-        NSString *s = [NSString stringWithContentsOfFile:PGFilterStatusPath
-                                                encoding:NSUTF8StringEncoding error:NULL];
-        if (statusOut) *statusOut = [NSString stringWithFormat:@"%@ exit=%d",
-                                     s.length ? s : @"(无状态文件)", code];
-        return code;
-    } @catch (NSException *e) { if (statusOut) *statusOut = @"exception"; }
-    return -5;
-}
-
-// 读回某个 filter plist 里当前生效的 Bundles（用于写入后校验）
-NS_INLINE NSArray *PGBundlesAtPath(NSString *path) {
-    @try {
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:path];
-        id b = [[d objectForKey:@"Filter"] objectForKey:@"Bundles"];
-        if ([b isKindOfClass:[NSArray class]]) return (NSArray *)b;
-    } @catch (NSException *e) {}
-    return nil;
-}
-
-// 诊断信息：把「filter 到底写没写成功、写到哪、为什么失败」回写到偏好里，
-// 这样设置面板能直接显示原因，用户不用猜、也不用开 Filza。
-#define PGKeyFilterDiag @"filterDiag"
-NS_INLINE void PGSetDiag(NSString *s) {
-    @try {
-        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:PGPrefs()];
-        d[PGKeyFilterDiag] = s ?: @"";
-        [d writeToFile:PGPrefsWritePath() atomically:YES];
-    } @catch (NSException *e) {}
-}
-NS_INLINE NSString *PGDiag(void) {
-    id v = PGValue(PGKeyFilterDiag);
-    return [v isKindOfClass:[NSString class]] ? (NSString *)v : @"";
-}
-
-// 把「注入 App 列表」写进 filter plist 的 Filter.Bundles。
-// 与旧版"注进所有进程再运行时 return"的本质区别：filter 里没有的进程
-// （SpringBoard / Sileo / 系统 App）压根不会被 dyld 加载 dylib —— 这才是根治。
-NS_INLINE BOOL PGSyncFilterPlist(void) {
-    NSMutableString *log = [NSMutableString string];
-    @try {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSArray<NSString *> *cs = PGFilterPlistCandidates();
-        if (cs.count == 0) { PGSetDiag(@"无法推断 jbroot"); return NO; }
-        [log appendFormat:@"uid=%d euid=%d | 候选%lu", getuid(), geteuid(), (unsigned long)cs.count];
-        if (cs.count) [log appendFormat:@" | 首选=%@", cs.firstObject];
-
-        NSMutableArray *bundles = [NSMutableArray array];
-        id apps = PGValue(PGKeyApps);
-        if ([apps isKindOfClass:[NSArray class]]) {
-            for (id b in (NSArray *)apps) {
-                if (![b isKindOfClass:[NSString class]]) continue;
-                NSString *bid = (NSString *)b;
-                if (!bid.length) continue;
-                if ([bid isEqualToString:@"com.apple.springboard"]) continue;
-                if ([bid hasPrefix:@"com.apple."]) continue;   // 系统 App 永不注入
-                [bundles addObject:bid];
-            }
-        }
-        // 全关：写占位 bid，保证不匹配任何进程
-        if (bundles.count == 0) bundles = [@[@"com.sykes.pgng.disabled"] mutableCopy];
-
-        NSError *serErr = nil;
-        NSData *data = [NSPropertyListSerialization
-                        dataWithPropertyList:@{@"Filter": @{@"Bundles": bundles}}
-                                      format:NSPropertyListXMLFormat_v1_0
-                                     options:0 error:&serErr];
-        if (!data.length) { PGSetDiag([log stringByAppendingString:@" | 序列化失败"]); return NO; }
-
-        NSString *stage = PGFilterStagePath;
-
-        // —— 第 0 层：filter 已经是软链且指向中转文件 → 只写中转就等于写 filter（免提权稳态）
-        for (NSString *dst in cs) {
-            NSString *link = [fm destinationOfSymbolicLinkAtPath:dst error:NULL];
-            if (link.length && [link isEqualToString:stage]) {
-                NSString *err = nil;
-                if (PGRawWrite(data, stage, &err) && [PGBundlesAtPath(dst) isEqualToArray:bundles]) {
-                    [log appendString:@" | 软链直写=成功"];
-                    PGSetDiag(log);
-                    return YES;
-                }
-                [log appendFormat:@" | 软链直写失败(%@)", err ?: @"回读校验不符"];
-                break;
-            }
-        }
-
-        // 期望内容先落到中转文件（mobile 可写）
-        NSString *serr = nil;
-        BOOL stageOK = PGRawWrite(data, stage, &serr);
-        [log appendFormat:@" | 中转=%@", stageOK ? @"OK" : [@"失败" stringByAppendingString:(serr ?: @"")]];
-
-        // —— 第 1 层：mobile 直接写 filter（权限多半不够，但先试，成本为零）
-        if (stageOK && cs.count) {
-            NSString *dst = cs.firstObject;
-            NSString *err = nil;
-            if (PGRawWrite(data, dst, &err) && [PGBundlesAtPath(dst) isEqualToArray:bundles]) {
-                [log appendString:@" | 直写=成功"];
-                PGSetDiag(log);
-                return YES;
-            }
-            [log appendFormat:@" | 直写失败(%@)", err ?: @"回读校验不符"];
-        }
-
-        // —— 第 2 层：setuid root helper 搬运（真正的解法）
-        if (stageOK && cs.count) {
-            NSString *dst = cs.firstObject;
-            NSString *st = nil;
-            int rc = PGRunHelper(@[stage, dst, PGFilterStatusPath], &st);
-            [log appendFormat:@" | helper%@", st ?: @"=?"];
-            if (rc == 0 && [PGBundlesAtPath(dst) isEqualToArray:bundles]) {
-                // —— 第 3 层：一次性把 filter 改造成软链，之后永远不必再提权
-                NSString *st2 = nil;
-                int rc2 = PGRunHelper(@[@"link", stage, dst, PGFilterStatusPath], &st2);
-                [log appendFormat:@" | 软链改造=%@", (rc2 == 0) ? @"成功(以后免提权)" : (st2 ?: @"失败")];
-                [log appendString:@" | 结果=成功"];
-                PGSetDiag(log);
-                return YES;
-            }
-        }
-
-        [log appendString:@" | 结果=失败"];
-        PGSetDiag(log);
-        return NO;
-    } @catch (NSException *e) {
-        [log appendString:@" | 异常"];
-        PGSetDiag(log);
-    }
-    return NO;
-}
-
-// 读回当前 filter plist 里实际生效的 Bundles（供设置面板显示诊断信息，
-// 这样用户不用 Filza 也能一眼确认「勾选有没有真的写进 filter」）
-NS_INLINE NSArray *PGFilterBundles(void) {
-    @try {
-        // 逐个候选读，第一个能解析出 Bundles 的即当前生效值
-        for (NSString *p in PGFilterPlistCandidates()) {
-            NSArray *b = PGBundlesAtPath(p);
-            if (b.count) return b;
-        }
-    } @catch (NSException *e) {}
-    return nil;
+    NSArray *apps = PGValue(PGKeyApps);
+    if (![apps isKindOfClass:[NSArray class]] || apps.count == 0) return NO;
+    return [apps containsObject:bid];
 }
 
 NS_INLINE NSTimeInterval PGDuration(void) {
@@ -436,13 +244,5 @@ NS_INLINE NSTimeInterval PGDuration(void) {
         double d = [v doubleValue];
         if (d >= 0.5) return d;
     }
-    return 2.0;
-}
-
-// 常驻显示：开启后时间电量一直挂在顶部，不依赖下拉手势（游戏中手势不灵时的保底方案）
-NS_INLINE BOOL PGKeepOn(void) {
-    id v = PGValue(PGKeyKeepOn);
-    if (v == nil) return NO;
-    if ([v respondsToSelector:@selector(boolValue)]) return [v boolValue];
-    return NO;
+    return 2.0;                        // 默认 2 秒
 }
