@@ -1,25 +1,16 @@
 // PGRootListController.m —— 设置面板首页
-//
-// 根因（roothide / iOS 16.5，连续多版空白的唯一真因）：
-//   系统 PSListController 的 loadSpecifiersFromPlistName: 在 roothide 环境下，
-//   解析不到我们 bundle 内的 Root.plist（PreferenceLoader 给子类设的 bundle 路径
-//   在 roothide 下异常），于是拿到空数组 → 页面空白。
-//   Choicy 之所以能显示，是因为它用 Cephei 的 HBListController 重写了一套加载逻辑。
-//
-// 本方案：不依赖 PSListController / loadSpecifiersFromPlistName 的 specifier 机制，
-// 直接用 PSViewController（补齐 PreferenceLoader 必需的 setParentController/setRootController/
-// setSpecifier 注入点，避免 unrecognized selector 闪退）+ UITableView 手写面板。
-// 零黑盒、必定显示；等效 Choicy 的 HBListController 效果，但不依赖设备上装有 Cephei。
+// 不依赖 PSListController / loadSpecifiersFromPlistName 的 specifier 机制（roothide 下解析 bundle
+// 内 Root.plist 易失败 → 空白），直接用 PSViewController + UITableView 手写面板，零黑盒必显示。
 #import <UIKit/UIKit.h>
 #import "PGCommon.h"
-#import "PGPrivate.h"   // PSViewController（含 setParentController:/setRootController:/setSpecifier:）
+#import "PGPrivate.h"   // PSViewController
 
 @interface PGRootListController : PSViewController <UITableViewDataSource, UITableViewDelegate>
 @end
 
 @implementation PGRootListController {
     UITableView *_tv;
-    NSArray<NSNumber *> *_durations;   // 1,2,3,5,10 秒
+    NSArray<NSNumber *> *_durations;
 }
 
 - (void)viewDidLoad {
@@ -30,7 +21,6 @@
 
     _durations = @[@1, @2, @3, @5, @10];
 
-    // 关闭按钮：兼容 PreferenceLoader 把本页以 push 或 modal 形式呈现
     self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithTitle:@"完成"
                                          style:UIBarButtonItemStyleDone
@@ -44,20 +34,24 @@
     _tv.dataSource = self;
     _tv.delegate = self;
     [self.view addSubview:_tv];
+
+    // 打开面板时自动把已保存的勾选同步进注入 filter：
+    // 避免「重装插件后勾选列表还在、但 filter 被重置成全关」导致的不生效。
+    @try {
+        if ([PGValue(PGKeyApps) isKindOfClass:[NSArray class]]) PGSyncFilterPlist();
+    } @catch (NSException *e) {}
 }
 
 - (void)pg_done {
     @try {
-        if (self.navigationController && self.navigationController.viewControllers.count > 1) {
+        if (self.navigationController && self.navigationController.viewControllers.count > 1)
             [self.navigationController popViewControllerAnimated:YES];
-        } else {
+        else
             [self dismissViewControllerAnimated:YES completion:nil];
-        }
     } @catch (NSException *e) {}
 }
 
-// 兜底：某些旧版 PreferenceLoader 会用 initForContentSize: 实例化控制器，
-// PSViewController 没有该方法，补一个免得又崩在实例化这一步。
+// 某些旧版 PreferenceLoader 会用 initForContentSize: 实例化控制器，补齐免得崩。
 - (instancetype)initForContentSize:(CGSize)size {
     return [self init];
 }
@@ -80,16 +74,16 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0)
-        return @"游戏中从屏幕顶部向下拉一次，顶部会浮出当前时间与电量，若干秒后自动消失。\n⚠️ roothide 必须先在 Bootstrap 的 App List 里打开该游戏的「注入」开关，否则 dylib 不会被加载（勾选无效）。";
+        return @"游戏中从屏幕顶部向下拉一次（或长按顶部 0.3 秒），顶部会浮出当前时间与电量，若干秒后自动消失。开启「常驻显示」后时间电量一直挂在顶部，点一下胶囊可临时隐藏 5 秒。进入 App 后 1~8 秒内还会自动闪现三次「PGNG✓」自检提示——三次都看不到说明插件没被注入该 App。";
     if (section == 2)
-        return @"默认不注入任何 App。请在「注入 App 列表」里勾选要显示时间电量的 App，勾选后立即生效（无需重启游戏）。roothide 下还需在 Bootstrap 的 App List 里打开对应 App 的注入开关。";
+        return @"默认不注入任何 App（全关）。勾选后，插件只会被加载进这些 App，SpringBoard / Sileo / 系统 App 完全不注入，因此不会进安全模式。注意：改完需完全退出并重新打开该 App 才生效。App 列表由 AltList 提供，需已安装 com.opa334.altlist。";
     return nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 2;   // 启用 + 调试模式
+    if (section == 0) return 2;
     if (section == 1) return (NSInteger)_durations.count;
-    return 1;   // 注入 App 列表
+    return 1;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -108,11 +102,11 @@
             cell.accessoryView = sw;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
-            cell.textLabel.text = @"调试模式";
-            cell.detailTextLabel.text = @"强制所有App显示浮层";
+            cell.textLabel.text = @"常驻显示";
+            cell.detailTextLabel.text = @"不用下拉，一直显示";
             UISwitch *sw = [[UISwitch alloc] init];
-            sw.on = [self pg_debug];
-            [sw addTarget:self action:@selector(pg_debugChanged:) forControlEvents:UIControlEventValueChanged];
+            sw.on = PGKeepOn();
+            [sw addTarget:self action:@selector(pg_keepOnChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = sw;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
@@ -126,7 +120,11 @@
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
     else {
-        cell.textLabel.text = @"注入 App 列表";
+        id apps = PGValue(PGKeyApps);
+        long n = [apps isKindOfClass:[NSArray class]] ? (long)((NSArray *)apps).count : 0;
+        cell.textLabel.text = n > 0
+            ? [NSString stringWithFormat:@"注入 App 列表（已选 %ld 个）", n]
+            : @"注入 App 列表（当前：全关）";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
@@ -158,9 +156,8 @@
     [self pg_setEnabled:sw.on];
 }
 
-- (BOOL)pg_debug { return PGDebugEnabled(); }
-- (void)pg_debugChanged:(UISwitch *)sw {
-    PGSetValue(PGKeyDebug, @(sw.on));
+- (void)pg_keepOnChanged:(UISwitch *)sw {
+    PGSetValue(PGKeyKeepOn, @(sw.on));
 }
 
 @end

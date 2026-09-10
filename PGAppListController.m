@@ -1,15 +1,10 @@
-// PGAppListController.m —— 注入 App 列表（搜索栏置顶 + 开关选择）
+// PGAppListController.m —— 注入 App 列表（搜索栏置顶 + 分段 + 开关勾选）
 //
-// 设计要点（解决之前「列表空白」的根因）：
-//   之前继承 PSListController 并「接管系统表」，但 PSListController 自己的空表
-//   会在 viewWillAppear 之后被叠到我们表的上层，于是看到的是空的系统表。
-//   这里改为【普通 UIViewController】，完全自控视图，绝不和 Preferences 框架
-//   的表视图产生冲突，列表一定能正常显示。
-//
-// 由 Root.plist 的 PSLinkCell(detail=PGAppListController, isController=true) 推入。
-// 这里继承 PSViewController（而非纯 UIViewController）：PSListController 把 detail 控制器
-// push 进导航栈时会调用 setRootController:/setParentController: 等 PSViewController 方法，
-// 纯 UIViewController 没有这些方法，调用会抛 unrecognized selector → 设置崩溃。
+// 数据源（对齐 Choicy 模式）：
+//   优先用 AltList 提供的 LSApplicationWorkspace 分类方法 atl_allInstalledApplications
+//   （设备上装了 com.opa334.altlist 就有，带分组、覆盖更全）；
+//   没有则自动回退到系统自带 allInstalledApplications / allApplications。
+//   面板页是本项目自写的控制器，继承 PSViewController，零 Cephei 依赖。
 #import <UIKit/UIKit.h>
 #import "PGCommon.h"
 #import "PGPrivate.h"   // PSViewController
@@ -25,13 +20,14 @@
     NSArray<NSDictionary *> *_shown;
     NSMutableSet<NSString *> *_selected;
     BOOL _showSystem;
+    BOOL _filterTried;   // 是否尝试过同步注入 filter
+    BOOL _filterOK;      // 同步是否成功
 }
 
 #pragma mark - 视图
 
 - (void)loadView {
-    // 关键：根视图就是普通 UIView，永远不可能是 UITableView，
-    // 从根本上杜绝「系统表盖住我们的表」这一类空白问题。
+    // 根视图就是普通 UIView，永远不可能是 UITableView，杜绝「系统表盖住我们的表」。
     self.view = [[UIView alloc] initWithFrame:[UIScreen mainScreen].bounds];
     if (@available(iOS 13.0, *)) self.view.backgroundColor = [UIColor systemBackgroundColor];
     else self.view.backgroundColor = [UIColor whiteColor];
@@ -41,7 +37,6 @@
     [super viewDidLoad];
     self.title = @"注入 App 列表";
 
-    // 关闭按钮（仅当本页被 modal 呈现时；push 场景由系统提供返回按钮）
     if (!(self.navigationController && self.navigationController.viewControllers.count > 1)) {
         self.navigationItem.leftBarButtonItem =
             [[UIBarButtonItem alloc] initWithTitle:@"完成"
@@ -53,13 +48,11 @@
     CGRect b = self.view.bounds;
     if (b.size.width <= 0) b = CGRectMake(0, 0, 375, 667);
 
-    // 顶部搜索栏（Choicy 同款位置：列表最上方）
     _searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, b.size.width, 44.0)];
     _searchBar.placeholder = @"搜索 App 名称或 Bundle ID";
     _searchBar.delegate = self;
     _searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
-    // 分段：仅用户 App / 全部 App
     _segment = [[UISegmentedControl alloc] initWithItems:@[@"仅用户 App", @"全部 App"]];
     _segment.frame = CGRectMake(12.0, 50.0, b.size.width - 24.0, 32.0);
     _segment.selectedSegmentIndex = 0;
@@ -110,16 +103,27 @@
     @try {
         Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
         if (!wsClass) return @[];
-        id ws = [wsClass respondsToSelector:@selector(defaultWorkspace)]
-                    ? [wsClass performSelector:@selector(defaultWorkspace)]
-                    : nil;
+        SEL dwsSel = NSSelectorFromString(@"defaultWorkspace");
+        id ws = [wsClass performSelector:dwsSel];
         if (!ws) return @[];
 
+        // 1) AltList 优先（装了 com.opa334.altlist 就有这个分类方法）
+        SEL atlSel = NSSelectorFromString(@"atl_allInstalledApplications");
+        // 2) 系统自带回退
+        SEL allISel = NSSelectorFromString(@"allInstalledApplications");
+        SEL allSel  = NSSelectorFromString(@"allApplications");
+
         NSArray *proxies = nil;
-        if ([ws respondsToSelector:@selector(allInstalledApplications)])
-            proxies = [ws performSelector:@selector(allInstalledApplications)];
-        else if ([ws respondsToSelector:@selector(allApplications)])
-            proxies = [ws performSelector:@selector(allApplications)];
+        if ([ws respondsToSelector:atlSel])
+            proxies = [ws performSelector:atlSel];
+        if (![proxies isKindOfClass:[NSArray class]] || proxies.count == 0) {
+            if ([ws respondsToSelector:allISel])
+                proxies = [ws performSelector:allISel];
+        }
+        if (![proxies isKindOfClass:[NSArray class]] || proxies.count == 0) {
+            if ([ws respondsToSelector:allSel])
+                proxies = [ws performSelector:allSel];
+        }
         if (![proxies isKindOfClass:[NSArray class]]) return @[];
 
         NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
@@ -127,7 +131,6 @@
             @try {
                 NSString *bid = nil, *name = nil;
                 BOOL system = NO;
-
                 id v = [proxy valueForKey:@"bundleIdentifier"];
                 if ([v isKindOfClass:[NSString class]]) bid = v;
                 if (bid.length == 0) {
@@ -163,8 +166,7 @@
 }
 
 - (void)pg_filter:(NSString *)text {
-    NSString *q = (text ?: @"");
-    q = [q stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *q = [text ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
     for (NSDictionary *app in [self pg_allApps]) {
         if (!_showSystem && [app[@"system"] boolValue]) continue;
@@ -209,13 +211,93 @@
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (_shown.count == 0) return 1;   // 空态提示行
+    if (_shown.count == 0) return 1;
     return (NSInteger)_shown.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return [NSString stringWithFormat:@"已选 %lu 个 App（默认不注入，勾选才生效）",
-            (unsigned long)[self pg_selected].count];
+// 头部直接显示「filter 里现在到底写了什么」——
+// 这是排查「勾了却没效果」最快的一手信息，用户不必再去 Filza 翻 plist。
+// 2.0.6：改用自绘 UILabel（numberOfLines=0），不再走系统表头 textLabel ——
+// 系统表头会把多行诊断文本截断成一行，导致 filter 那行根本看不到。
+// 进页面时若「已勾选列表」与「filter 实际内容」不一致，就静默重写一次 filter 自愈。
+// 场景：用户在旧版勾过（只存进偏好、filter 没写进去），升级后一进列表就能自动补上。
+- (void)pg_autoResync {
+    @try {
+        NSMutableSet *sel = [NSMutableSet set];
+        for (id o in [self pg_selected]) if ([o isKindOfClass:[NSString class]]) [sel addObject:o];
+
+        NSMutableSet *real = [NSMutableSet set];
+        for (id o in (PGFilterBundles() ?: @[])) {
+            if (![o isKindOfClass:[NSString class]]) continue;
+            if ([o isEqualToString:@"com.sykes.pgng.disabled"]) continue;
+            [real addObject:o];
+        }
+        if (![sel isEqualToSet:real]) {
+            _filterTried = YES;
+            _filterOK = PGSyncFilterPlist();
+        }
+    } @catch (NSException *e) {}
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self pg_autoResync];
+    [_tv reloadData];
+}
+
+- (NSString *)pg_headerText {
+    NSMutableString *s = [NSMutableString string];
+    [s appendFormat:@"已选 %lu 个 App（默认全关）", (unsigned long)[self pg_selected].count];
+
+    NSArray *fb = PGFilterBundles();
+    if (fb.count == 0) {
+        [s appendString:@"\nfilter: (读不到，检查安装)"];
+    } else if (fb.count == 1 && [fb[0] isEqualToString:@"com.sykes.pgng.disabled"]) {
+        [s appendString:@"\nfilter: 全关占位（等于没勾）"];
+    } else {
+        [s appendFormat:@"\nfilter: %@", [fb componentsJoinedByString:@", "]];
+    }
+    // 写没写成功、为什么失败，直接摊开给用户看
+    if (_filterTried) [s appendFormat:@"\n写入filter: %@", _filterOK ? @"成功" : @"失败"];
+    NSString *diag = PGDiag();
+    if (diag.length) [s appendFormat:@"\n%@", diag];
+    [s appendString:@"\n勾选后需彻底退出并重开该 App 才生效"];
+    return s;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section { return 208.0; }
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    UIView *v = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 208.0)];
+    v.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    if (@available(iOS 13.0, *)) v.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    else v.backgroundColor = [UIColor colorWithRed:0.94 green:0.94 blue:0.96 alpha:1.0];
+    UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(16.0, 6.0, v.bounds.size.width - 32.0, 196.0)];
+    lb.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    lb.font = [UIFont systemFontOfSize:9.0];
+    lb.numberOfLines = 0;
+    lb.text = [self pg_headerText];
+    [v addSubview:lb];
+    // 点一下表头 = 把完整诊断复制到剪贴板并弹窗展示，方便直接粘贴给开发者
+    v.userInteractionEnabled = YES;
+    [v addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                    action:@selector(pg_copyDiag)]];
+    return v;
+}
+
+- (void)pg_copyDiag {
+    @try {
+        NSString *s = [NSString stringWithFormat:@"%@\n--- jbroot候选 ---\n%@\n--- helper候选 ---\n%@",
+                       [self pg_headerText],
+                       [PGJbRootCandidates() componentsJoinedByString:@"\n"],
+                       [PGHelperCandidates() componentsJoinedByString:@"\n"]];
+        [UIPasteboard generalPasteboard].string = s;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"诊断信息已复制"
+                                                                    message:s
+                                                             preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+    } @catch (NSException *e) {}
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -225,7 +307,7 @@
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
     if (_shown.count == 0) {
-        cell.textLabel.text = @"未找到匹配的 App";
+        cell.textLabel.text = @"未找到匹配的 App（请确认已安装 AltList）";
         cell.detailTextLabel.text = nil;
         cell.accessoryView = nil;
         return cell;
@@ -260,9 +342,18 @@
 
 - (void)pg_save {
     @try {
-        NSArray *list = [[[self pg_selected] allObjects] sortedArrayUsingSelector:@selector(compare:)];
-        PGSetValue(PGKeyApps, list);
+        // 勾选为空 = 不写白名单（恢复默认全关，不注入任何 App）；勾选了则按白名单注入。
+        if ([self pg_selected].count == 0) {
+            // 必须写空数组而不是 nil：nil 表示"读不到偏好"，会被兜底逻辑当成已勾选。
+            PGSetValue(PGKeyApps, @[]);
+        } else {
+            NSArray *list = [[[self pg_selected] allObjects] sortedArrayUsingSelector:@selector(compare:)];
+            PGSetValue(PGKeyApps, list);
+        }
     } @catch (NSException *e) {}
+    // ★ 同步注入 filter：让 roothide 只把 dylib 注进勾选的 App（改完需重启该 App 生效）
+    _filterTried = YES;
+    _filterOK = PGSyncFilterPlist();
 }
 
 - (void)pg_close {
