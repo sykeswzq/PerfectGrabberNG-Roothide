@@ -1,5 +1,11 @@
 #!/bin/sh
-# Post-install: 重启 runningboardd 使新 filter 生效
-# 对齐 Choicy 范式（https://github.com/opa334/Choicy）
+# Post-install: ① 重启 runningboardd 使新 filter 生效（对齐 Choicy/锤子助手范式）；
+#               ② 把 filter.plist 改成 mobile 可写，让设置面板(mobile)能直接写回勾选的 App。
+# roothide 下 postinst 运行时根 = jbroot（官方特性），相对路径即真实位置，无需 /var/jb 软链。
+F=Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist
+if [ -f "$F" ]; then
+    chown mobile:mobile "$F" 2>/dev/null
+    chmod 666 "$F" 2>/dev/null
+fi
 killall runningboardd 2>/dev/null
 exit 0

@@ -78,12 +78,14 @@ jobs:
           echo "$IDS" | grep -q "@loader_path/.jbroot" \
             || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范: $IDS"; exit 1; }
           ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          # filter 必须是 Classes=[UIApplication]：注入所有 GUI App，由 RootHide 白名单版决定真正注入哪些
-          /usr/libexec/PlistBuddy -c "Print :Filter:Classes:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "UIApplication" || { echo "ERROR: filter 不是 Classes=[UIApplication]（无法注入所有 GUI App）"; exit 1; }
-          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Classes 注入所有 GUI App"
+          # V2.0.20：filter 必须是 Bundles 精准白名单（不是 Classes 全局注入）。
+          # Classes=[UIApplication] 会注入所有加载 UIKit 的进程 → 命中不该进的进程 → 安全模式（2.0.19 踩坑）。
+          # Bundles 初始为占位符 com.sykes.pgng.disabled（零注入、不崩），运行时由设置面板改写真 bid。
+          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist >/dev/null 2>&1 || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入 → 安全模式）"; exit 1; }
+          B0="$(/usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist 2>/dev/null)"
+          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Bundles 精准白名单(Bundles[0]=$B0)"
 
-          # V2.0.19 起不再需要 setuid helper：filter 改为 Classes=[UIApplication]，
-          # 由 RootHide 白名单版决定注入范围，无需运行时改 filter。
+          # V2.0.20 起不再需要 setuid helper：filter 由设置面板(mobile) 直写（postinst chown mobile + chmod 666）。
           echo "全部校验通过"
 
       - name: Upload artifact

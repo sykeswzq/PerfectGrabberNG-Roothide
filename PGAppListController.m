@@ -237,11 +237,23 @@
     NSUInteger n = [self pg_selected].count;
     [s appendFormat:@"显示范围：已限定 %lu 个 App", (unsigned long)n];
     if (n == 0) {
-        [s appendString:@"\n（留空 = RootHide 白名单版内全部显示）"];
+        [s appendString:@"\n（留空 = 默认不注入任何 App，最安全）"];
     } else {
         [s appendString:@"\n（仅在这些 App 显示浮层）"];
     }
-    [s appendString:@"\n注入总闸：RootHide 白名单版（roothideinject）"];
+    // filter 实际内容（一眼确认勾选有没有真的写进去）
+    NSArray *fb = PGFilterBundles();
+    if (fb.count == 0) {
+        [s appendString:@"\nfilter: (读不到)"];
+    } else if (fb.count == 1 && [fb[0] isEqualToString:@"com.sykes.pgng.disabled"]) {
+        [s appendString:@"\nfilter: 占位符（=未勾选/未写成功）"];
+    } else {
+        [s appendFormat:@"\nfilter: %@", [fb componentsJoinedByString:@", "]];
+    }
+    if (_filterTried) [s appendFormat:@"\n写入filter: %@", _filterOK ? @"成功" : @"失败"];
+    NSString *diag = PGDiag();
+    if (diag.length) [s appendFormat:@"\n%@", diag];
+    [s appendString:@"\n注入需两步：① 白名单版加白该 App；② 此处勾选"];
     [s appendString:@"\n改完后需彻底退出并重开该 App 才生效"];
     return s;
 }

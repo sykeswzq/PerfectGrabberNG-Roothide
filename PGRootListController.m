@@ -35,8 +35,12 @@
     _tv.delegate = self;
     [self.view addSubview:_tv];
 
-    // V2.0.19：注入由 RootHide 白名单版决定，无需运行时写 filter。
-    // 「注入 App 列表」仅作为 PGNG 内部的显示范围限定（留空=白名单内全部显示）。
+    // V2.0.20：打开面板时把已保存的勾选同步进注入 filter（Bundles 精准白名单）。
+    // 避免「重装插件后勾选列表还在、但 filter 被重置成占位符」导致的不生效。
+    // filter 对 mobile 可写（build.sh chmod 666 + postinst chown mobile），设置面板直写即可。
+    @try {
+        if ([PGValue(PGKeyApps) isKindOfClass:[NSArray class]]) PGSyncFilterPlist();
+    } @catch (NSException *e) {}
 }
 
 - (void)pg_done {

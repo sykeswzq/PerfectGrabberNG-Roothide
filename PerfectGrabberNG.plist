@@ -4,13 +4,19 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.19：改为注入所有 GUI App（Classes=[UIApplication]）。
-		     真正"是否注入"由 RootHide 白名单版(roothideinject)的 App 白名单决定（闸①），
-		     PGNG 不再运行时写 filter、不再依赖 setuid helper（iOS 上必失败 → 占位符永久生效 → 零注入）。
-		     构造期纯 C 白名单仍兜住系统/越狱管理进程，不会进安全模式。 -->
-		<key>Classes</key>
+		<!-- V2.0.20：恢复 Bundles 精准白名单（根治安全模式铁律：系统/越狱进程绝不在列表里）。
+		     初始占位符 com.sykes.pgng.disabled 不匹配任何真实进程 → 零注入 → 不崩。
+		     用户在设置里勾选 App 后，PGSyncFilterPlist() 把真 bid 写进这里。
+		     写权限由两道保险保证（绕开 iOS 上失效的 setuid 提权）：
+		       ① build.sh 打包时 chmod 666；
+		       ② postinst（root 身份、运行时根=jbroot）chown mobile:mobile + chmod 666。
+		     注入需两步（两道闸 AND）：
+		       ① RootHide 白名单版(roothideinject)加白目标 App；
+		       ② PGNG 设置里勾选该 App（写入此 filter 的 Bundles）。
+		     roothide 官方不向 SpringBoard/守护注入，且 Bundles 只含用户 App → 绝不进安全模式。 -->
+		<key>Bundles</key>
 		<array>
-			<string>UIApplication</string>
+			<string>com.sykes.pgng.disabled</string>
 		</array>
 	</dict>
 </dict>
