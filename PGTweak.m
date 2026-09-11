@@ -101,14 +101,23 @@ static void PGLog(NSString *s) {
     return s;
 }
 
-// iOS 13+ 拿 windowScene 的极保守方案。
-// 只从 sharedApplication.windows 里找第一个已有 window 的 scene，
-// 不再枚举 connectedScenes（游戏进程 scene 状态机可能被 hook，枚举会触发崩溃）。
+// V2.0.21：回退到 1.0.35 风格——枚举 connectedScenes 找 foregroundActive 的 UIWindowScene。
+// dylib 字符串对比证实：1.0.35(roothide, initWithWindowScene + 枚举 connectedScenes) 能在原神跑不闪退；
+// 2.0.20 的 PGPickWindowScene(从 app.windows 取 scene) + initWithFrame: 反而闪退。
+// roothide 下枚举 connectedScenes 对原神安全（1.0.35 已验证），Dopamine 下的 SIGSEGV 不复现。
 static UIWindowScene *PGPickWindowScene(void) {
     UIApplication *app = [UIApplication sharedApplication];
     if (!app) return nil;
-    for (UIWindow *win in app.windows) {
-        if (win.windowScene) return win.windowScene;
+    // 优先 foregroundActive 的 UIWindowScene
+    for (UIScene *s in app.connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]] &&
+            s.activationState == UISceneActivationStateForegroundActive) {
+            return (UIWindowScene *)s;
+        }
+    }
+    // 兜底：任意 UIWindowScene（放宽，游戏/全屏 App 也尽量拿到）
+    for (UIScene *s in app.connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
     }
     return nil;
 }
@@ -130,21 +139,20 @@ static UIWindowScene *PGPickWindowScene(void) {
         UIApplication *app = [UIApplication sharedApplication];
         if (!app) return;
 
-        // ★ V2.0.11：极端保守 —— 不依赖 applicationState，任何状态都建 window。
-        //   原神在启动期 applicationState 可能是 Background 或 Active，
-        //   枚举 connectedScenes 在 Metal 渲染进程中会触发 SIGSEGV。
+        // V2.0.21：直接建 window（不依赖 applicationState）。下方已回退到 1.0.35 风格：
+        //   scene 来自枚举 connectedScenes；roothide 下原神该枚举安全（仅 Dopamine 旧环境才会 SIGSEGV）。
 
         UIWindow *w = nil;
-        // ★ 2.0.11：放弃 initWithWindowScene:，改用 initWithFrame: 避免 scene 生命周期干扰
-        w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", NSStringFromCGRect([UIScreen mainScreen].bounds)]);
+        // V2.0.21：回退到 1.0.35 风格——用 initWithWindowScene: 绑定 scene（原神 roothide 下可正常显示）。
+        // 拿不到 scene 直接跳过，绝不 initWithWindowScene:nil（会崩）。
+        UIWindowScene *sc = PGPickWindowScene();
+        if (!sc) { PGLog(@"install: 拿不到 UIWindowScene，跳过"); return; }
+        w = [[UIWindow alloc] initWithWindowScene:sc];
+        PGLog(@"install: 建 window (scene 已绑定)");
 
         w.backgroundColor = [UIColor clearColor];
-        // ★ V2.0.11：windowLevel 降到 UIWindowLevelNormal + 1（≈201）
-        //   远低于 Alert(1500)，保证不会干扰任何游戏 UI 层级。
-        //   游戏启动时 miHoYo SDK 建的登录/公告层是 Alert 级别，我们的 Normal+1 会被盖住，
-        //   但不会触发 SIGSEGV。手势触发时再做一次强制重排即可。
-        w.windowLevel = UIWindowLevelNormal + 1.0;
+        // V2.0.21：回退到 1.0.35 高 level（UIWindowLevelAlert + 1），原神里正常置顶显示时间电量胶囊。
+        w.windowLevel = UIWindowLevelAlert + 1.0;   // V2.0.21：回退 1.0.35 高 level（原神里正常置顶显示）
         w.userInteractionEnabled = YES;
 
         UIViewController *vc = [[UIViewController alloc] init];
@@ -175,10 +183,9 @@ static UIWindowScene *PGPickWindowScene(void) {
         // 状态栏高度：把胶囊挪到灵动岛下方（iPhone 14 Pro 灵动岛约 y=11~48）
         CGFloat sbh = 0;
         if (@available(iOS 13.0, *)) {
-            // ★ V2.0.11 修复：用 app.windows 里的 window 取 scene，而不是未定义的 scene 变量
-            UIWindow *firstWin = app.windows.firstObject;
-            if (firstWin.windowScene && firstWin.windowScene.statusBarManager) {
-                sbh = firstWin.windowScene.statusBarManager.statusBarFrame.size.height;
+            // V2.0.21：直接用已绑定的 scene 取 statusBarManager（scene 已由 PGPickWindowScene 拿到）
+            if (sc.statusBarManager) {
+                sbh = sc.statusBarManager.statusBarFrame.size.height;
             }
         }
         if (sbh <= 0) sbh = app.statusBarFrame.size.height;

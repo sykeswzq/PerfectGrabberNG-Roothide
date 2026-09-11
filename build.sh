@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 
 PKG=com.sykes.perfectgrabberng
 NAME="下拉时间电量 NG"
-VER=2.0.20
+VER=2.0.21
 ARCH="iphoneos-arm64e"
 OUT="com.sykes.perfectgrabberng_${VER}_${ARCH}.deb"
 # roothide 规范的 install name（对齐 Choicy 活样板）。
