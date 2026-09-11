@@ -78,27 +78,15 @@ jobs:
           echo "$IDS" | grep -q "@loader_path/.jbroot" \
             || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范: $IDS"; exit 1; }
           ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          # filter 可以是 Bundles 白名单或 Executables 白名单
-          # V2.0.18：支持 helper setuid 校验
-          FILTER_TYPE=$(grep -oE 'Bundles|Executables' /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | head -1)
-          if [ -z "$FILTER_TYPE" ]; then
-            echo "ERROR: filter 为空"
-            exit 1
-          elif [ "$FILTER_TYPE" = "Bundles" ]; then
-            grep -q "com.sykes.pgng.disabled" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist \
-              || { echo "ERROR: Bundles 白名单为空"; exit 1; }
-            echo "  (2b) OK filter=Bundles 白名单模式"
-          elif [ "$FILTER_TYPE" = "Executables" ]; then
-            echo "  (2b) OK filter=Executables 白名单模式"
-          fi
+          # filter 必须是 Bundles 白名单（精准注入），不能退化为 Classes 全局注入
+          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "com.sykes.pgng.disabled" || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入）"; exit 1; }
+          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Bundles 精准注入"
 
-          # helper 必须存在且可执行
+          # helper 必须存在且可执行（V2.0.18：setuid root 辅助写 filter）
           HELPER=/tmp/pgcheck/usr/bin/pgngfilter
           [ -f "$HELPER" ] || { echo "ERROR: helper pgngfilter 不存在"; exit 1; }
           [ -x "$HELPER" ] || { echo "ERROR: helper 不可执行"; exit 1; }
           echo "  (3) OK helper 存在且可执行"
-
-          echo "  (2) OK dylib 头正常 + install name 规范 + filter 白名单模式正确"
           echo "全部校验通过"
 
       - name: Upload artifact
