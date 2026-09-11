@@ -222,21 +222,8 @@
 // 进页面时若「已勾选列表」与「filter 实际内容」不一致，就静默重写一次 filter 自愈。
 // 场景：用户在旧版勾过（只存进偏好、filter 没写进去），升级后一进列表就能自动补上。
 - (void)pg_autoResync {
-    @try {
-        NSMutableSet *sel = [NSMutableSet set];
-        for (id o in [self pg_selected]) if ([o isKindOfClass:[NSString class]]) [sel addObject:o];
-
-        NSMutableSet *real = [NSMutableSet set];
-        for (id o in (PGFilterBundles() ?: @[])) {
-            if (![o isKindOfClass:[NSString class]]) continue;
-            if ([o isEqualToString:@"com.sykes.pgng.disabled"]) continue;
-            [real addObject:o];
-        }
-        if (![sel isEqualToSet:real]) {
-            _filterTried = YES;
-            _filterOK = PGSyncFilterPlist();
-        }
-    } @catch (NSException *e) {}
+    // V2.0.19：filter 是静态 Classes=[UIApplication]，由 RootHide 白名单版决定注入范围，
+    // 不再运行时改写 filter，无需在此自愈同步。
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -247,21 +234,15 @@
 
 - (NSString *)pg_headerText {
     NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"已选 %lu 个 App（默认全关）", (unsigned long)[self pg_selected].count];
-
-    NSArray *fb = PGFilterBundles();
-    if (fb.count == 0) {
-        [s appendString:@"\nfilter: (读不到，检查安装)"];
-    } else if (fb.count == 1 && [fb[0] isEqualToString:@"com.sykes.pgng.disabled"]) {
-        [s appendString:@"\nfilter: 全关占位（等于没勾）"];
+    NSUInteger n = [self pg_selected].count;
+    [s appendFormat:@"显示范围：已限定 %lu 个 App", (unsigned long)n];
+    if (n == 0) {
+        [s appendString:@"\n（留空 = RootHide 白名单版内全部显示）"];
     } else {
-        [s appendFormat:@"\nfilter: %@", [fb componentsJoinedByString:@", "]];
+        [s appendString:@"\n（仅在这些 App 显示浮层）"];
     }
-    // 写没写成功、为什么失败，直接摊开给用户看
-    if (_filterTried) [s appendFormat:@"\n写入filter: %@", _filterOK ? @"成功" : @"失败"];
-    NSString *diag = PGDiag();
-    if (diag.length) [s appendFormat:@"\n%@", diag];
-    [s appendString:@"\n勾选后需彻底退出并重开该 App 才生效"];
+    [s appendString:@"\n注入总闸：RootHide 白名单版（roothideinject）"];
+    [s appendString:@"\n改完后需彻底退出并重开该 App 才生效"];
     return s;
 }
 
@@ -287,10 +268,7 @@
 
 - (void)pg_copyDiag {
     @try {
-        NSString *s = [NSString stringWithFormat:@"%@\n--- jbroot候选 ---\n%@\n--- helper候选 ---\n%@",
-                       [self pg_headerText],
-                       [PGJbRootCandidates() componentsJoinedByString:@"\n"],
-                       [PGHelperCandidates() componentsJoinedByString:@"\n"]];
+        NSString *s = [self pg_headerText];
         [UIPasteboard generalPasteboard].string = s;
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"诊断信息已复制"
                                                                     message:s
@@ -342,7 +320,7 @@
 
 - (void)pg_save {
     @try {
-        // 勾选为空 = 不写白名单（恢复默认全关，不注入任何 App）；勾选了则按白名单注入。
+        // 勾选为空 = 不限定（白名单版内全部显示）；勾选了则只在这些 App 显示浮层。
         if ([self pg_selected].count == 0) {
             // 必须写空数组而不是 nil：nil 表示"读不到偏好"，会被兜底逻辑当成已勾选。
             PGSetValue(PGKeyApps, @[]);
@@ -351,9 +329,6 @@
             PGSetValue(PGKeyApps, list);
         }
     } @catch (NSException *e) {}
-    // ★ 同步注入 filter：让 roothide 只把 dylib 注进勾选的 App（改完需重启该 App 生效）
-    _filterTried = YES;
-    _filterOK = PGSyncFilterPlist();
 }
 
 - (void)pg_close {

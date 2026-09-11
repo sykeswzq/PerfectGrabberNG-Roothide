@@ -49,18 +49,7 @@ jobs:
         run: rm -f *.deb
 
       - name: Build
-        run: bash -x build.sh > build_trace.log 2>&1 || true
-        continue-on-error: true
-
-      - name: Commit build trace
-        if: always()
-        run: |
-          git config user.email "ci@ci.com"
-          git config user.name "CI Debug"
-          git add build_trace.log || true
-          git commit -m "debug: build trace [skip ci]" || echo "no changes"
-          git push origin main || echo "push failed"
-
+        run: bash build.sh
 
       - name: Verify deb
         run: |
@@ -89,15 +78,12 @@ jobs:
           echo "$IDS" | grep -q "@loader_path/.jbroot" \
             || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范: $IDS"; exit 1; }
           ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          # filter 必须是 Bundles 白名单（精准注入），不能退化为 Classes 全局注入
-          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "com.sykes.pgng.disabled" || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入）"; exit 1; }
-          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Bundles 精准注入"
+          # filter 必须是 Classes=[UIApplication]：注入所有 GUI App，由 RootHide 白名单版决定真正注入哪些
+          /usr/libexec/PlistBuddy -c "Print :Filter:Classes:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "UIApplication" || { echo "ERROR: filter 不是 Classes=[UIApplication]（无法注入所有 GUI App）"; exit 1; }
+          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Classes 注入所有 GUI App"
 
-          # helper 必须存在且可执行（V2.0.18：setuid root 辅助写 filter）
-          HELPER=/tmp/pgcheck/usr/bin/pgngfilter
-          [ -f "$HELPER" ] || { echo "ERROR: helper pgngfilter 不存在"; exit 1; }
-          [ -x "$HELPER" ] || { echo "ERROR: helper 不可执行"; exit 1; }
-          echo "  (3) OK helper 存在且可执行"
+          # V2.0.19 起不再需要 setuid helper：filter 改为 Classes=[UIApplication]，
+          # 由 RootHide 白名单版决定注入范围，无需运行时改 filter。
           echo "全部校验通过"
 
       - name: Upload artifact

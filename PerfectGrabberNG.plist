@@ -4,10 +4,13 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.11：Bundles 白名单精准注入，杜绝安全模式 -->
-		<key>Bundles</key>
+		<!-- V2.0.19：改为注入所有 GUI App（Classes=[UIApplication]）。
+		     真正"是否注入"由 RootHide 白名单版(roothideinject)的 App 白名单决定（闸①），
+		     PGNG 不再运行时写 filter、不再依赖 setuid helper（iOS 上必失败 → 占位符永久生效 → 零注入）。
+		     构造期纯 C 白名单仍兜住系统/越狱管理进程，不会进安全模式。 -->
+		<key>Classes</key>
 		<array>
-			<string>com.sykes.pgng.disabled</string>
+			<string>UIApplication</string>
 		</array>
 	</dict>
 </dict>

@@ -35,11 +35,8 @@
     _tv.delegate = self;
     [self.view addSubview:_tv];
 
-    // 打开面板时自动把已保存的勾选同步进注入 filter：
-    // 避免「重装插件后勾选列表还在、但 filter 被重置成全关」导致的不生效。
-    @try {
-        if ([PGValue(PGKeyApps) isKindOfClass:[NSArray class]]) PGSyncFilterPlist();
-    } @catch (NSException *e) {}
+    // V2.0.19：注入由 RootHide 白名单版决定，无需运行时写 filter。
+    // 「注入 App 列表」仅作为 PGNG 内部的显示范围限定（留空=白名单内全部显示）。
 }
 
 - (void)pg_done {
@@ -76,7 +73,7 @@
     if (section == 0)
         return @"游戏中从屏幕顶部向下拉一次（或长按顶部 0.3 秒），顶部会浮出当前时间与电量，若干秒后自动消失。开启「常驻显示」后时间电量一直挂在顶部，点一下胶囊可临时隐藏 5 秒。进入 App 后 1~8 秒内还会自动闪现三次「PGNG✓」自检提示——三次都看不到说明插件没被注入该 App。";
     if (section == 2)
-        return @"默认不注入任何 App（全关）。勾选后，插件只会被加载进这些 App，SpringBoard / Sileo / 系统 App 完全不注入，因此不会进安全模式。注意：改完需完全退出并重新打开该 App 才生效。App 列表由 AltList 提供，需已安装 com.opa334.altlist。";
+        return @"插件会注入到 RootHide 白名单版已加白的所有应用。下方列表可进一步限定只在其中某些 App 显示浮层；留空=白名单内全部显示，清空=全部不显示。注意：改完需彻底退出并重新打开该 App 才生效。App 列表由 AltList 提供，需已安装 com.opa334.altlist。";
     return nil;
 }
 
@@ -123,8 +120,8 @@
         id apps = PGValue(PGKeyApps);
         long n = [apps isKindOfClass:[NSArray class]] ? (long)((NSArray *)apps).count : 0;
         cell.textLabel.text = n > 0
-            ? [NSString stringWithFormat:@"注入 App 列表（已选 %ld 个）", n]
-            : @"注入 App 列表（当前：全关）";
+            ? [NSString stringWithFormat:@"注入 App 列表（限定 %ld 个）", n]
+            : @"注入 App 列表（白名单内全部显示）";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
