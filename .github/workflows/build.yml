@@ -49,7 +49,18 @@ jobs:
         run: rm -f *.deb
 
       - name: Build
-        run: bash build.sh
+        run: bash -x build.sh > build_trace.log 2>&1 || true
+        continue-on-error: true
+
+      - name: Commit build trace
+        if: always()
+        run: |
+          git config user.email "ci@ci.com"
+          git config user.name "CI Debug"
+          git add build_trace.log || true
+          git commit -m "debug: build trace [skip ci]" || echo "no changes"
+          git push origin main || echo "push failed"
+
 
       - name: Verify deb
         run: |
