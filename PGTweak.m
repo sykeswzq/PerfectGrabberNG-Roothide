@@ -1,16 +1,16 @@
-// PGTweak.m —— V2.0.11：极端保守修复，杜绝原神/SIGSEGV 闪退
+// PGTweak.m —— V2.0.22：roothide 下原神(Untiy/Metal) 闪退根治
 //
-// V2.0.11 改动（针对原神 SIGSEGV）：
-//   1) 移除 connectedScenes 枚举：游戏进程 scene 状态机可能被 hook，枚举会触发崩溃。
-//      改为直接拿 sharedApplication.windows 的第一个 window 的 scene（如果有的话）。
-//   2) 移除 initWithWindowScene:，改用 initWithFrame:[UIScreen mainScreen].bounds：
-//      避免在游戏进程中触发 scene 生命周期回调。
-//   3) windowLevel 降到 UIWindowLevelNormal + 1（≈201），远低于 Alert(1500)，
-//      保证不会干扰任何游戏 UI 层级。
-//   4) 移除 UIDevice.batteryMonitoringEnabled = YES：防止电池事件回调被游戏 hook 导致崩溃。
-//   5) 移除 applicationWillResignActive/DidBecomeActive 等通知观察者：
-//      游戏进程的通知分发机制可能被 hook，注册新观察者可能干扰。
-//   6) 自检闪现只在「非游戏」进程（由 appState 判断）才触发，避免游戏进程动画闪烁。
+// V2.0.22 改动（针对 roothide + 原神 SIGKILL 无日志闪退）：
+//   ★ 根因：roothide 环境下给 Unity/Metal 游戏进程新建【绑定 scene 的 UIWindow 浮层】
+//     (initWithWindowScene: + windowLevel=Alert+1 + hidden=NO) 会在加载期与游戏渲染循环 /
+//     roothide 的 UIKit shim 冲突，内核直接 SIGKILL（无崩溃日志）。
+//     二进制对比证实：Netskao 的 rootless 原版(原神能跑)【从不创建 UIWindow】，
+//     只 MSHookMessageEx 钩子 + initWithFrame: 建 UIView 后 addSubview: 挂到已有视图层级。
+//     rootless(Dopamine) 对同一套 UIWindow 代码容忍度更高所以不崩；roothide 不行。
+//   ★ 修复：彻底移除 UIWindow / windowScene / connectedScenes / windowLevel / rootViewController。
+//     改为取游戏 keyWindow -> addSubview: 一个普通 UIView 容器(PGPassthroughView)，
+//     下拉手势直接挂在容器上；显示/隐藏只调胶囊 alpha。对齐能跑版机制，崩点被移除。
+//   ★ 保留：下拉/下滑/长按三手势、触摸穿透(PGPassthroughView)、电量/时间刷新、常驻模式。
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
@@ -75,7 +75,7 @@ static void PGLog(NSString *s) {
 }
 @end
 
-#pragma mark - 浮层
+#pragma mark - 浮层（V2.0.22：不再自建 UIWindow，挂到游戏 keyWindow 上）
 
 @interface PGOverlay : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -83,9 +83,26 @@ static void PGLog(NSString *s) {
 - (void)pg_reload;
 @end
 
+// V2.0.22：取游戏 keyWindow（iOS 13+ 多 scene 安全），不再取/建 UIWindowScene。
+static UIWindow *PGPickKeyWindow(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    if (!app) return nil;
+    // 优先 isKeyWindow 且可见的窗口
+    for (UIWindow *win in app.windows) {
+        if (win.isKeyWindow && !win.isHidden) return win;
+    }
+    // 兜底：任意可见窗口
+    for (UIWindow *win in app.windows) {
+        if (!win.isHidden) return win;
+    }
+    // 再兜底：deprecated keyWindow / 最后一个窗口
+    if (app.keyWindow) return app.keyWindow;
+    return app.windows.lastObject;
+}
+
 @implementation PGOverlay {
-    UIWindow *_window;
-    PGPassthroughView *_content;
+    UIWindow *_hostWindow;          // 仅用于 bringSubviewToFront / 状态栏高度，不做浮层
+    PGPassthroughView *_content;    // 直接 addSubview 到 keyWindow 的容器
     UIView *_strip;
     UIView *_infoView;
     UILabel *_label;
@@ -101,29 +118,8 @@ static void PGLog(NSString *s) {
     return s;
 }
 
-// V2.0.21：回退到 1.0.35 风格——枚举 connectedScenes 找 foregroundActive 的 UIWindowScene。
-// dylib 字符串对比证实：1.0.35(roothide, initWithWindowScene + 枚举 connectedScenes) 能在原神跑不闪退；
-// 2.0.20 的 PGPickWindowScene(从 app.windows 取 scene) + initWithFrame: 反而闪退。
-// roothide 下枚举 connectedScenes 对原神安全（1.0.35 已验证），Dopamine 下的 SIGSEGV 不复现。
-static UIWindowScene *PGPickWindowScene(void) {
-    UIApplication *app = [UIApplication sharedApplication];
-    if (!app) return nil;
-    // 优先 foregroundActive 的 UIWindowScene
-    for (UIScene *s in app.connectedScenes) {
-        if ([s isKindOfClass:[UIWindowScene class]] &&
-            s.activationState == UISceneActivationStateForegroundActive) {
-            return (UIWindowScene *)s;
-        }
-    }
-    // 兜底：任意 UIWindowScene（放宽，游戏/全屏 App 也尽量拿到）
-    for (UIScene *s in app.connectedScenes) {
-        if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
-    }
-    return nil;
-}
-
 - (void)pg_install {
-    if (_window) return;
+    if (_content) return;
     if (!PGEnabled()) { PGLog(@"install: 总开关关闭"); return; }
     if (!PGCurrentAppSelected()) {
         PGLog([NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()]);
@@ -135,36 +131,24 @@ static UIWindowScene *PGPickWindowScene(void) {
 - (void)pg_tryInstallWithRetry:(int)n {
     dispatch_async(dispatch_get_main_queue(), ^{
       @try {
-        if (_window) return;
+        if (_content) return;
         UIApplication *app = [UIApplication sharedApplication];
         if (!app) return;
 
-        // V2.0.21：直接建 window（不依赖 applicationState）。下方已回退到 1.0.35 风格：
-        //   scene 来自枚举 connectedScenes；roothide 下原神该枚举安全（仅 Dopamine 旧环境才会 SIGSEGV）。
+        // V2.0.22：取游戏 keyWindow，把容器 UIView 直接 addSubview 上去（不建 UIWindow）。
+        UIWindow *kw = PGPickKeyWindow();
+        if (!kw) { PGLog(@"install: 拿不到 keyWindow，跳过"); return; }
 
-        UIWindow *w = nil;
-        // V2.0.21：回退到 1.0.35 风格——用 initWithWindowScene: 绑定 scene（原神 roothide 下可正常显示）。
-        // 拿不到 scene 直接跳过，绝不 initWithWindowScene:nil（会崩）。
-        UIWindowScene *sc = PGPickWindowScene();
-        if (!sc) { PGLog(@"install: 拿不到 UIWindowScene，跳过"); return; }
-        w = [[UIWindow alloc] initWithWindowScene:sc];
-        PGLog(@"install: 建 window (scene 已绑定)");
-
-        w.backgroundColor = [UIColor clearColor];
-        // V2.0.21：回退到 1.0.35 高 level（UIWindowLevelAlert + 1），原神里正常置顶显示时间电量胶囊。
-        w.windowLevel = UIWindowLevelAlert + 1.0;   // V2.0.21：回退 1.0.35 高 level（原神里正常置顶显示）
-        w.userInteractionEnabled = YES;
-
-        UIViewController *vc = [[UIViewController alloc] init];
-        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:w.bounds];
+        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:kw.bounds];
         cv.backgroundColor = [UIColor clearColor];
         cv.opaque = NO;
         cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        vc.view = cv;
-        w.rootViewController = vc;
-        w.hidden = NO;
-        _window = w;
+        cv.pgHitView = nil;
+        [kw addSubview:cv];
+        [kw bringSubviewToFront:cv];   // 置顶，盖在游戏 UI 之上
+        _hostWindow = kw;
         _content = cv;
+        PGLog(@"install: 容器已 addSubview 到 keyWindow（无 UIWindow）");
 
         // 顶部触发条（透明，高度 120，更容易摸中）
         UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
@@ -183,9 +167,8 @@ static UIWindowScene *PGPickWindowScene(void) {
         // 状态栏高度：把胶囊挪到灵动岛下方（iPhone 14 Pro 灵动岛约 y=11~48）
         CGFloat sbh = 0;
         if (@available(iOS 13.0, *)) {
-            // V2.0.21：直接用已绑定的 scene 取 statusBarManager（scene 已由 PGPickWindowScene 拿到）
-            if (sc.statusBarManager) {
-                sbh = sc.statusBarManager.statusBarFrame.size.height;
+            if (kw.windowScene && kw.windowScene.statusBarManager) {
+                sbh = kw.windowScene.statusBarManager.statusBarFrame.size.height;
             }
         }
         if (sbh <= 0) sbh = app.statusBarFrame.size.height;
@@ -254,8 +237,7 @@ static UIWindowScene *PGPickWindowScene(void) {
         // [UIDevice currentDevice].batteryMonitoringEnabled = YES;
         PGLog(@"install: 完成");
 
-        // ★ V2.0.11：自检闪现只触发一次、1秒后，避免游戏进程动画闪烁
-        //   原神/Metal 进程中调用 UIView animateWithDuration 会干扰渲染线程
+        // 自检闪现一次、1 秒后（避免游戏进程动画闪烁）。无动画，直接 alpha。
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self pg_showFor:2.0];
@@ -278,9 +260,8 @@ static UIWindowScene *PGPickWindowScene(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [_keepTimer invalidate]; _keepTimer = nil;
         _content.pgHitView = nil;
-        _window.hidden = YES;
-        _window.rootViewController = nil;
-        _window = nil; _content = nil; _strip = nil; _infoView = nil; _label = nil;
+        [_content removeFromSuperview];
+        _content = nil; _hostWindow = nil; _strip = nil; _infoView = nil; _label = nil;
     });
 }
 
@@ -317,14 +298,15 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 - (void)pg_showFor:(NSTimeInterval)d {
     if (!PGEnabled() || !PGCurrentAppSelected()) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!_window || !_label) return;
-
-        // ★ V2.0.11：移除 windowLevel 强制重排——游戏进程中修改 windowLevel 可能触发 Metal 渲染同步崩溃
-        //   改用固定 level，不做动态调整
+        if (!_content || !_label) return;
+        // 确保容器仍在 keyWindow 上且置顶（游戏可能重建/重排 window）
+        UIWindow *kw = PGPickKeyWindow();
+        if (kw && _content.superview != kw) [kw addSubview:_content];
+        if (kw) [kw bringSubviewToFront:_content];
 
         [self pg_updateText];
 
-        // ★ V2.0.11：移除动画，直接设置 alpha，避免 Metal 进程中的视图动画干扰渲染
+        // V2.0.22：无动画，直接 alpha（避免 Metal 进程动画干扰渲染）
         _infoView.alpha = 1.0;
         _infoView.transform = CGAffineTransformIdentity;
         if (PGKeepOn()) { [self pg_startKeepTimer]; return; }
@@ -353,7 +335,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 - (void)pg_startKeepTimer {
     if (_keepTimer) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (_keepTimer || !_window) return;
+        if (_keepTimer || !_content) return;
         _keepTimer = [NSTimer timerWithTimeInterval:30.0
                                              target:self
                                            selector:@selector(pg_keepTick)
@@ -364,9 +346,10 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 }
 
 - (void)pg_keepTick {
-    if (!PGKeepOn() || !_window || !_label) { [_keepTimer invalidate]; _keepTimer = nil; return; }
-    _window.hidden = NO;
-    // V2.0.11: 移除 windowLevel 重排和动画
+    if (!PGKeepOn() || !_content || !_label) { [_keepTimer invalidate]; _keepTimer = nil; return; }
+    UIWindow *kw = PGPickKeyWindow();
+    if (kw && _content.superview != kw) [kw addSubview:_content];
+    if (kw) [kw bringSubviewToFront:_content];
     [self pg_updateText];
     _infoView.alpha = 1.0;
 }
@@ -387,7 +370,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 
 - (void)pg_hide {
     if (!_infoView) return;
-    // ★ V2.0.11：移除动画，直接隐藏
     _infoView.alpha = 0.0;
     _infoView.transform = CGAffineTransformIdentity;
 }
@@ -398,40 +380,29 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 __attribute__((constructor))
 static void PGInit(void) {
     // ★ 纯 C 层第一道闸（在任何 ObjC 之前）：正向白名单，杜绝安全模式。
-    // roothide 会把 dylib 注进 SpringBoard / 越狱工具 / 系统 App 甚至开机守护；
-    // 在这些进程里跑 ObjC（NSBundle mainBundle / NSProcessInfo）时机不对就会崩 → Dopamine 判 boot 失败 → 安全模式。
-    // 正向白名单策略：只有"真·App"进程才允许进 ObjC——App 的可执行文件一定在 xxx.app/ 目录里；
-    // 系统目录 / 守护 / 脚本 / 工具一律在纯 C 层直接 return，绝不碰 ObjC。
     const char *img0 = _dyld_get_image_name(0);
-    if (!img0 || !img0[0]) return;              // 拿不到主可执行路径（开机关键守护常见）→ 保守直接退出
+    if (!img0 || !img0[0]) return;
     const char *p = img0;
-    if (strncmp(p, "/System", 7) == 0) return;   // /System/... 系统（含 SpringBoard.app）
-    if (strncmp(p, "/usr", 4) == 0) return;      // /usr/libexec、/usr/bin 系统守护/工具
+    if (strncmp(p, "/System", 7) == 0) return;
+    if (strncmp(p, "/usr", 4) == 0) return;
     if (strncmp(p, "/bin", 4) == 0) return;
     if (strncmp(p, "/sbin", 5) == 0) return;
     if (strncmp(p, "/Library", 8) == 0) return;
     if (strstr(p, "SpringBoard")) return;
-    if (strstr(p, "/var/jb")) return;            // 越狱目录（正常 App 不在 /var/jb 下，仅作保护）
+    if (strstr(p, "/var/jb")) return;
     if (strstr(p, "/var/lib")) return;
-    if (!strstr(p, ".app/")) return;             // 正向白名单：非 App 进程（守护/脚本/工具/管理器可执行体）一律不注入
+    if (!strstr(p, ".app/")) return;
 
     @autoreleasepool {
-        // 关键防护放最前：系统进程 / 越狱管理 App 一律不注入，杜绝安全模式崩溃。
         if (PGIsSystemProcess()) return;
         if (PGIsJailbreakManager()) return;
 
         PGLog([NSString stringWithFormat:@"init: 已进入 bid=%@ img=%s", PGAppBundleID(), img0]);
 
-        // 注册通知监听（轻量、安全）：在设置里勾选 App / 开关变化时，已运行中的 App 也能即时生效。
         int token = 0;
         notify_register_dispatch(PGNotifyName, &token, dispatch_get_main_queue(), ^(int t) {
             [[PGOverlay shared] pg_reload];
         });
-
-        // ★ 2.0.5：这里【不再】因为「判定未勾选」就 return。
-        // 2.0.4 的 bug：构造期若偏好读不到（第三方 App 沙盒常见）或 mainBundle 尚未就绪，
-        // 判定会失败并直接 return —— 于是通知没注册、兜底没排程，之后再也没机会补救。
-        // 现在始终注册，真正的判定交给 pg_install 内部，DidBecomeActive 每次都能再试。
 
         // roothide 在 didFinishLaunching 之后才注入 dylib，只监听 DidFinishLaunching 会错过。
         // 同时监听 DidBecomeActive，并额外做多次兜底，确保必然安装。
