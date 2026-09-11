@@ -1,0 +1,37 @@
++ set -euo pipefail
+++ dirname build.sh
++ cd .
++ PKG=com.sykes.perfectgrabberng
++ NAME='下拉时间电量 NG'
++ VER=2.0.18
++ ARCH=iphoneos-arm64e
++ OUT=com.sykes.perfectgrabberng_2.0.18_iphoneos-arm64e.deb
++ NEWID=@loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
++ rm -f com.sykes.perfectgrabberng_2.0.18_iphoneos-arm64e.deb
+++ xcrun --sdk iphoneos --show-sdk-path
++ SDK=/Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk
++ echo 'iPhoneOS SDK: /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk'
+iPhoneOS SDK: /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk
++ command -v ldid
++ STAGE=build
++ rm -rf build pkg
++ mkdir -p build/Library/MobileSubstrate/DynamicLibraries
++ mkdir -p build/Library/PreferenceBundles/PerfectGrabberNG.bundle
++ mkdir -p build/Library/PreferenceLoader/Preferences
++ mkdir -p build/usr/bin
++ echo '[1/4] 编译 tweak dylib（arm64 + arm64e，iPhoneOS SDK，ad-hoc 签名）'
+[1/4] 编译 tweak dylib（arm64 + arm64e，iPhoneOS SDK，ad-hoc 签名）
++ xcrun --sdk iphoneos clang -dynamiclib -fobjc-arc -undefined dynamic_lookup -install_name @loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib -arch arm64 -arch arm64e -mios-version-min=13.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -o build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib PGTweak.m
+PGTweak.m:140:104: error: no member named 'description' in 'struct CGRect'
+  140 |         PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", [UIScreen mainScreen].bounds.description]);
+      |                                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^
+PGTweak.m:140:75: warning: format specifies type 'id' but the argument has type '<dependent type>' [-Wformat]
+  140 |         PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", [UIScreen mainScreen].bounds.description]);
+      |                                                                     ~~   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+PGTweak.m:184:33: warning: 'statusBarFrame' is deprecated: first deprecated in iOS 13.0 - Use the statusBarManager property of the window scene instead. [-Wdeprecated-declarations]
+  184 |         if (sbh <= 0) sbh = app.statusBarFrame.size.height;
+      |                                 ^
+/Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:131:38: note: 'statusBarFrame' has been explicitly marked deprecated here
+  131 | @property(nonatomic,readonly) CGRect statusBarFrame API_DEPRECATED("Use the statusBarManager property of the window scene instead.", ios(2.0, 13.0)) API_UNAVAILABLE(tvos) API_UNAVAILABLE(visionos, watchos); // returns CGRectZero if the status bar is hidden
+      |                                      ^
+2 warnings and 1 error generated.
