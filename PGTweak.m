@@ -137,7 +137,7 @@ static UIWindowScene *PGPickWindowScene(void) {
         UIWindow *w = nil;
         // ★ 2.0.11：放弃 initWithWindowScene:，改用 initWithFrame: 避免 scene 生命周期干扰
         w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", [UIScreen mainScreen].bounds.description]);
+        PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", NSStringFromCGRect([UIScreen mainScreen].bounds)]);
 
         w.backgroundColor = [UIColor clearColor];
         // ★ V2.0.11：windowLevel 降到 UIWindowLevelNormal + 1（≈201）
