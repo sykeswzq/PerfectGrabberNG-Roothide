@@ -1,16 +1,18 @@
-// PGTweak.m —— V2.0.22：roothide 下原神(Untiy/Metal) 闪退根治
+// PGTweak.m —— V2.0.22：去 UIWindow，改 addSubview 到 keyWindow
 //
-// V2.0.22 改动（针对 roothide + 原神 SIGKILL 无日志闪退）：
-//   ★ 根因：roothide 环境下给 Unity/Metal 游戏进程新建【绑定 scene 的 UIWindow 浮层】
-//     (initWithWindowScene: + windowLevel=Alert+1 + hidden=NO) 会在加载期与游戏渲染循环 /
-//     roothide 的 UIKit shim 冲突，内核直接 SIGKILL（无崩溃日志）。
-//     二进制对比证实：Netskao 的 rootless 原版(原神能跑)【从不创建 UIWindow】，
-//     只 MSHookMessageEx 钩子 + initWithFrame: 建 UIView 后 addSubview: 挂到已有视图层级。
-//     rootless(Dopamine) 对同一套 UIWindow 代码容忍度更高所以不崩；roothide 不行。
-//   ★ 修复：彻底移除 UIWindow / windowScene / connectedScenes / windowLevel / rootViewController。
-//     改为取游戏 keyWindow -> addSubview: 一个普通 UIView 容器(PGPassthroughView)，
-//     下拉手势直接挂在容器上；显示/隐藏只调胶囊 alpha。对齐能跑版机制，崩点被移除。
-//   ★ 保留：下拉/下滑/长按三手势、触摸穿透(PGPassthroughView)、电量/时间刷新、常驻模式。
+// 根因诊断（2026-09-11 二进制 diff 证实）：
+//   roothide 下新建 scene-bound UIWindow（initWithWindowScene + connectedScenes）
+//   会在 Unity/Metal 游戏加载期触发内核 SIGKILL，无崩溃日志。
+//   Netskao rootless 1.1-7（原神能跑）的机制是：MSHookMessageEx 钩子 +
+//   initWithFrame: 建 UIView 后 addSubview 到已有窗口——全程不碰 UIWindow。
+//
+// V2.0.22 改动：
+//   1) 移除 PGPickWindowScene()、UIWindow *_window、initWithWindowScene:、connectedScenes、
+//      UIWindowLevel、rootViewController——这些就是崩点。
+//   2) 取 UIApplication.sharedApplication.keyWindow，addSubview: 一个 PGPassthroughView 容器。
+//   3) 手势识别器、PGPassthroughView 穿透逻辑保留（这些是显示层，不崩）。
+//   4) build.sh VER → 2.0.22。
+
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
@@ -27,7 +29,6 @@ static void PGLog(NSString *s) {
         if (!tried) {
             tried = YES;
             NSFileManager *fm = [NSFileManager defaultManager];
-            // App 沙盒 Documents 一定可写（第三方 App 写 /var/mobile 常被拒）
             NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
             NSMutableArray *cands = [NSMutableArray array];
             if (doc.length) [cands addObject:[doc stringByAppendingPathComponent:@"pgng_diag.log"]];
@@ -69,13 +70,13 @@ static void PGLog(NSString *s) {
                 return r ?: strip;
             }
         }
-        return nil; // 游戏区域不吃触摸，原样穿透
+        return nil;
     }
     return v;
 }
 @end
 
-#pragma mark - 浮层（V2.0.22：不再自建 UIWindow，挂到游戏 keyWindow 上）
+#pragma mark - 浮层（无 UIWindow 版）
 
 @interface PGOverlay : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -83,28 +84,10 @@ static void PGLog(NSString *s) {
 - (void)pg_reload;
 @end
 
-// V2.0.22：取游戏 keyWindow（iOS 13+ 多 scene 安全），不再取/建 UIWindowScene。
-static UIWindow *PGPickKeyWindow(void) {
-    UIApplication *app = [UIApplication sharedApplication];
-    if (!app) return nil;
-    // 优先 isKeyWindow 且可见的窗口
-    for (UIWindow *win in app.windows) {
-        if (win.isKeyWindow && !win.isHidden) return win;
-    }
-    // 兜底：任意可见窗口
-    for (UIWindow *win in app.windows) {
-        if (!win.isHidden) return win;
-    }
-    // 再兜底：deprecated keyWindow / 最后一个窗口
-    if (app.keyWindow) return app.keyWindow;
-    return app.windows.lastObject;
-}
-
 @implementation PGOverlay {
-    UIWindow *_hostWindow;          // 仅用于 bringSubviewToFront / 状态栏高度，不做浮层
-    PGPassthroughView *_content;    // 直接 addSubview 到 keyWindow 的容器
-    UIView *_strip;
-    UIView *_infoView;
+    PGPassthroughView *_content;   // 直接 addSubview 到 keyWindow 的容器
+    UIView *_strip;        // 顶部触发条
+    UIView *_infoView;     // 时间+电量胶囊
     UILabel *_label;
     BOOL _pulled;
     NSInteger _token;
@@ -119,7 +102,7 @@ static UIWindow *PGPickKeyWindow(void) {
 }
 
 - (void)pg_install {
-    if (_content) return;
+    if (_content) return;   // 已挂载则不重复
     if (!PGEnabled()) { PGLog(@"install: 总开关关闭"); return; }
     if (!PGCurrentAppSelected()) {
         PGLog([NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()]);
@@ -132,25 +115,18 @@ static UIWindow *PGPickKeyWindow(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
       @try {
         if (_content) return;
-        UIApplication *app = [UIApplication sharedApplication];
-        if (!app) return;
+        // 取当前 keyWindow，加不上就去通知 DidBecomeActive 再试
+        UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+        if (!kw) { PGLog(@"install: 暂无 keyWindow，等待 DidBecomeActive"); return; }
 
-        // V2.0.22：取游戏 keyWindow，把容器 UIView 直接 addSubview 上去（不建 UIWindow）。
-        UIWindow *kw = PGPickKeyWindow();
-        if (!kw) { PGLog(@"install: 拿不到 keyWindow，跳过"); return; }
-
-        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:kw.bounds];
+        // 直接 addSubview 到 keyWindow，不新建 UIWindow
+        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:CGRectZero];
         cv.backgroundColor = [UIColor clearColor];
         cv.opaque = NO;
-        cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        cv.pgHitView = nil;
         [kw addSubview:cv];
-        [kw bringSubviewToFront:cv];   // 置顶，盖在游戏 UI 之上
-        _hostWindow = kw;
         _content = cv;
-        PGLog(@"install: 容器已 addSubview 到 keyWindow（无 UIWindow）");
 
-        // 顶部触发条（透明，高度 120，更容易摸中）
+        // 顶部触发条（透明，高度 120）
         UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
         strip.backgroundColor = [UIColor clearColor];
         strip.translatesAutoresizingMaskIntoConstraints = NO;
@@ -164,15 +140,18 @@ static UIWindow *PGPickKeyWindow(void) {
         cv.pgHitView = strip;
         _strip = strip;
 
-        // 状态栏高度：把胶囊挪到灵动岛下方（iPhone 14 Pro 灵动岛约 y=11~48）
+        // 状态栏高度：把胶囊挪到灵动岛下方
         CGFloat sbh = 0;
         if (@available(iOS 13.0, *)) {
-            if (kw.windowScene && kw.windowScene.statusBarManager) {
-                sbh = kw.windowScene.statusBarManager.statusBarFrame.size.height;
+            for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+                if ([sc isKindOfClass:[UIWindowScene class]] && ((UIWindowScene *)sc).statusBarManager) {
+                    sbh = ((UIWindowScene *)sc).statusBarManager.statusBarFrame.size.height;
+                    break;
+                }
             }
         }
-        if (sbh <= 0) sbh = app.statusBarFrame.size.height;
-        if (sbh <= 0) sbh = 54.0;    // iPhone 14 Pro 兜底
+        if (sbh <= 0) sbh = [UIApplication sharedApplication].statusBarFrame.size.height;
+        if (sbh <= 0) sbh = 54.0;
         CGFloat infoTop = sbh + 4.0;
 
         // 时间+电量胶囊
@@ -180,10 +159,10 @@ static UIWindow *PGPickKeyWindow(void) {
         info.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
         info.layer.cornerRadius = 14.0;
         info.layer.masksToBounds = YES;
-        info.layer.borderWidth = 1.0;                                 // 白色细描边：亮背景也看得清
+        info.layer.borderWidth = 1.0;
         info.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.35].CGColor;
         info.alpha = 0.0;
-        info.userInteractionEnabled = YES;                            // 点一下可临时隐藏
+        info.userInteractionEnabled = YES;
         info.translatesAutoresizingMaskIntoConstraints = NO;
         [strip addSubview:info];
         [NSLayoutConstraint activateConstraints:@[
@@ -213,37 +192,37 @@ static UIWindow *PGPickKeyWindow(void) {
         ]];
         _label = lb;
 
-        // 触发 1：下拉手势（阈值 12pt，不设速度门槛，缓慢下拉也命中）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
         pan.cancelsTouchesInView = NO;
         pan.delegate = self;
         [strip addGestureRecognizer:pan];
 
-        // 触发 2：下滑 swipe（pan 被宿主手势干扰时兜底）
         UISwipeGestureRecognizer *swipe = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handleSwipeDown:)];
         swipe.direction = UISwipeGestureRecognizerDirectionDown;
         swipe.cancelsTouchesInView = NO;
         swipe.delegate = self;
         [strip addGestureRecognizer:swipe];
 
-        // 触发 3：顶部长按 0.3s
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handleLongPress:)];
         lp.minimumPressDuration = 0.3;
         lp.cancelsTouchesInView = NO;
         lp.delegate = self;
         [strip addGestureRecognizer:lp];
 
-        // ★ V2.0.11：禁用电池监控，防止游戏进程 hook 导致崩溃
-        // [UIDevice currentDevice].batteryMonitoringEnabled = YES;
-        PGLog(@"install: 完成");
+        PGLog(@"install: addSubview 完成");
 
-        // 自检闪现一次、1 秒后（避免游戏进程动画闪烁）。无动画，直接 alpha。
+        // 1秒后自检闪现（避免 Metal 渲染线程干扰）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self pg_showFor:2.0];
         });
       } @catch (NSException *e) {
           PGLog([NSString stringWithFormat:@"install: 异常 %@", e.reason]);
+          // 失败重试，最多 3 次
+          if (n < 3) {
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                             dispatch_get_main_queue(), ^{ [self pg_tryInstallWithRetry:n+1]; });
+          }
       }
     });
 }
@@ -261,13 +240,13 @@ static UIWindow *PGPickKeyWindow(void) {
         [_keepTimer invalidate]; _keepTimer = nil;
         _content.pgHitView = nil;
         [_content removeFromSuperview];
-        _content = nil; _hostWindow = nil; _strip = nil; _infoView = nil; _label = nil;
+        _content = nil; _strip = nil; _infoView = nil; _label = nil;
     });
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)a
 shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
-    return YES;   // 三个手势互不排斥，任一命中即触发
+    return YES;
 }
 
 - (void)pg_handlePan:(UIPanGestureRecognizer *)g {
@@ -294,19 +273,14 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
     [self pg_showFor:PGDuration()];
 }
 
-// d 秒后自动隐藏（PGKeepOn 常驻模式不排隐藏，由定时器持续刷新）
 - (void)pg_showFor:(NSTimeInterval)d {
     if (!PGEnabled() || !PGCurrentAppSelected()) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!_content || !_label) return;
-        // 确保容器仍在 keyWindow 上且置顶（游戏可能重建/重排 window）
-        UIWindow *kw = PGPickKeyWindow();
-        if (kw && _content.superview != kw) [kw addSubview:_content];
-        if (kw) [kw bringSubviewToFront:_content];
 
         [self pg_updateText];
 
-        // V2.0.22：无动画，直接 alpha（避免 Metal 进程动画干扰渲染）
+        // 直接 alpha，不动画（避免 Metal 渲染线程干扰）
         _infoView.alpha = 1.0;
         _infoView.transform = CGAffineTransformIdentity;
         if (PGKeepOn()) { [self pg_startKeepTimer]; return; }
@@ -331,7 +305,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
     _label.text = [NSString stringWithFormat:@"%@   %@%d%%", time, bolt, pct];
 }
 
-// 常驻模式：30 秒刷新一次时间/电量，并确保胶囊在前台可见
 - (void)pg_startKeepTimer {
     if (_keepTimer) return;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -347,14 +320,10 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 
 - (void)pg_keepTick {
     if (!PGKeepOn() || !_content || !_label) { [_keepTimer invalidate]; _keepTimer = nil; return; }
-    UIWindow *kw = PGPickKeyWindow();
-    if (kw && _content.superview != kw) [kw addSubview:_content];
-    if (kw) [kw bringSubviewToFront:_content];
     [self pg_updateText];
     _infoView.alpha = 1.0;
 }
 
-// 点一下胶囊：临时隐藏（常驻模式 5 秒后自动回来，非常驻模式等下次触发）
 - (void)pg_handleTap:(UITapGestureRecognizer *)g {
     if (g.state != UIGestureRecognizerStateRecognized) return;
     if (!_infoView || _infoView.alpha < 0.5) return;
@@ -379,7 +348,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 
 __attribute__((constructor))
 static void PGInit(void) {
-    // ★ 纯 C 层第一道闸（在任何 ObjC 之前）：正向白名单，杜绝安全模式。
+    // 纯 C 层白名单：在 ObjC 之前过滤掉系统/越狱进程，杜绝安全模式崩溃。
     const char *img0 = _dyld_get_image_name(0);
     if (!img0 || !img0[0]) return;
     const char *p = img0;
@@ -404,8 +373,7 @@ static void PGInit(void) {
             [[PGOverlay shared] pg_reload];
         });
 
-        // roothide 在 didFinishLaunching 之后才注入 dylib，只监听 DidFinishLaunching 会错过。
-        // 同时监听 DidBecomeActive，并额外做多次兜底，确保必然安装。
+        // DidFinishLaunching + DidBecomeActive 两次兜底
         void (^tryInstall)(void) = ^{
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -420,7 +388,7 @@ static void PGInit(void) {
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *n) { tryInstall(); }];
-        // 兜底：构造后 2 秒直接尝试（覆盖 roothide 注入过晚、通知已错过的情况）
+        // 构造后 2 秒兜底（覆盖 roothide 注入过晚、通知已错过的情况）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[PGOverlay shared] pg_install];
