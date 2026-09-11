@@ -22,16 +22,150 @@ iPhoneOS SDK: /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS
 + echo '[1/4] 编译 tweak dylib（arm64 + arm64e，iPhoneOS SDK，ad-hoc 签名）'
 [1/4] 编译 tweak dylib（arm64 + arm64e，iPhoneOS SDK，ad-hoc 签名）
 + xcrun --sdk iphoneos clang -dynamiclib -fobjc-arc -undefined dynamic_lookup -install_name @loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib -arch arm64 -arch arm64e -mios-version-min=13.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -o build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib PGTweak.m
-PGTweak.m:140:104: error: no member named 'description' in 'struct CGRect'
-  140 |         PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", [UIScreen mainScreen].bounds.description]);
-      |                                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^
-PGTweak.m:140:75: warning: format specifies type 'id' but the argument has type '<dependent type>' [-Wformat]
-  140 |         PGLog([NSString stringWithFormat:@"install: 建 window frame=%@", [UIScreen mainScreen].bounds.description]);
-      |                                                                     ~~   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 PGTweak.m:184:33: warning: 'statusBarFrame' is deprecated: first deprecated in iOS 13.0 - Use the statusBarManager property of the window scene instead. [-Wdeprecated-declarations]
   184 |         if (sbh <= 0) sbh = app.statusBarFrame.size.height;
       |                                 ^
 /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:131:38: note: 'statusBarFrame' has been explicitly marked deprecated here
   131 | @property(nonatomic,readonly) CGRect statusBarFrame API_DEPRECATED("Use the statusBarManager property of the window scene instead.", ios(2.0, 13.0)) API_UNAVAILABLE(tvos) API_UNAVAILABLE(visionos, watchos); // returns CGRectZero if the status bar is hidden
       |                                      ^
-2 warnings and 1 error generated.
+1 warning generated.
+ld: warning: -undefined dynamic_lookup is deprecated on iOS
+PGTweak.m:184:33: warning: 'statusBarFrame' is deprecated: first deprecated in iOS 13.0 - Use the statusBarManager property of the window scene instead. [-Wdeprecated-declarations]
+  184 |         if (sbh <= 0) sbh = app.statusBarFrame.size.height;
+      |                                 ^
+/Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:131:38: note: 'statusBarFrame' has been explicitly marked deprecated here
+  131 | @property(nonatomic,readonly) CGRect statusBarFrame API_DEPRECATED("Use the statusBarManager property of the window scene instead.", ios(2.0, 13.0)) API_UNAVAILABLE(tvos) API_UNAVAILABLE(visionos, watchos); // returns CGRectZero if the status bar is hidden
+      |                                      ^
+1 warning generated.
+ld: warning: -undefined dynamic_lookup is deprecated on iOS
++ chmod 755 build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
++ cp PerfectGrabberNG.plist build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist
++ chmod 666 build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist
++ touch build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib.roothidepatch
++ echo '[1.5/4] 编译 setuid root 帮助程序 pgngfilter'
+[1.5/4] 编译 setuid root 帮助程序 pgngfilter
++ xcrun --sdk iphoneos clang -O2 -Wall -arch arm64 -arch arm64e -mios-version-min=13.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -o build/usr/bin/pgngfilter pgngfilter.c
++ ldid -M -S build/usr/bin/pgngfilter
++ chmod 4755 build/usr/bin/pgngfilter
+++ ls -l build/usr/bin/pgngfilter
+++ awk '{print $1,$NF}'
++ echo '  helper: -rwsr-xr-x build/usr/bin/pgngfilter'
+  helper: -rwsr-xr-x build/usr/bin/pgngfilter
++ echo '[2/4] 编译设置面板 bundle（PS 私有类运行时解析，-undefined dynamic_lookup）'
+[2/4] 编译设置面板 bundle（PS 私有类运行时解析，-undefined dynamic_lookup）
++ xcrun --sdk iphoneos clang -bundle -fobjc-arc -undefined dynamic_lookup -framework Foundation -framework UIKit -framework CoreGraphics -arch arm64 -arch arm64e -mios-version-min=13.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -o build/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG PGRootListController.m PGAppListController.m
+PGAppListController.m:107:26: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  107 |         id ws = [wsClass performSelector:dwsSel];
+      |                          ^
+PGAppListController.m:107:42: note: used here
+  107 |         id ws = [wsClass performSelector:dwsSel];
+      |                                          ^
+PGAppListController.m:118:27: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  118 |             proxies = [ws performSelector:atlSel];
+      |                           ^
+PGAppListController.m:118:43: note: used here
+  118 |             proxies = [ws performSelector:atlSel];
+      |                                           ^
+PGAppListController.m:121:31: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  121 |                 proxies = [ws performSelector:allISel];
+      |                               ^
+PGAppListController.m:121:47: note: used here
+  121 |                 proxies = [ws performSelector:allISel];
+      |                                               ^
+PGAppListController.m:125:31: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  125 |                 proxies = [ws performSelector:allSel];
+      |                               ^
+PGAppListController.m:125:47: note: used here
+  125 |                 proxies = [ws performSelector:allSel];
+      |                                               ^
+4 warnings generated.
+ld: warning: -undefined dynamic_lookup is deprecated on iOS
+PGAppListController.m:107:26: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  107 |         id ws = [wsClass performSelector:dwsSel];
+      |                          ^
+PGAppListController.m:107:42: note: used here
+  107 |         id ws = [wsClass performSelector:dwsSel];
+      |                                          ^
+PGAppListController.m:118:27: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  118 |             proxies = [ws performSelector:atlSel];
+      |                           ^
+PGAppListController.m:118:43: note: used here
+  118 |             proxies = [ws performSelector:atlSel];
+      |                                           ^
+PGAppListController.m:121:31: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  121 |                 proxies = [ws performSelector:allISel];
+      |                               ^
+PGAppListController.m:121:47: note: used here
+  121 |                 proxies = [ws performSelector:allISel];
+      |                                               ^
+PGAppListController.m:125:31: warning: performSelector may cause a leak because its selector is unknown [-Warc-performSelector-leaks]
+  125 |                 proxies = [ws performSelector:allSel];
+      |                               ^
+PGAppListController.m:125:47: note: used here
+  125 |                 proxies = [ws performSelector:allSel];
+      |                                               ^
+4 warnings generated.
+ld: warning: -undefined dynamic_lookup is deprecated on iOS
++ chmod 755 build/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG
++ cp BundleInfo.plist build/Library/PreferenceBundles/PerfectGrabberNG.bundle/Info.plist
++ chmod 644 build/Library/PreferenceBundles/PerfectGrabberNG.bundle/Info.plist
++ cp Root.plist build/Library/PreferenceBundles/PerfectGrabberNG.bundle/Root.plist
++ chmod 644 build/Library/PreferenceBundles/PerfectGrabberNG.bundle/Root.plist
++ cp PrefLoader.plist build/Library/PreferenceLoader/Preferences/PerfectGrabberNG.plist
++ chmod 644 build/Library/PreferenceLoader/Preferences/PerfectGrabberNG.plist
++ echo '[3/4] 校验 install name + ldid 重签 + 校验 Mach-O 头 + 校验 filter + 校验 helper'
+[3/4] 校验 install name + ldid 重签 + 校验 Mach-O 头 + 校验 filter + 校验 helper
++ DL=build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+++ otool -D build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+++ grep -v architecture
+++ grep -v '^$'
+++ sort -u
++ IDS='@loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib:'
++ echo '  install name: @loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib:'
+  install name: @loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib:
++ echo '@loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib:'
++ grep -q @loader_path/.jbroot
++ ldid -M -S build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
++ ldid -M -S build/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG
++ for f in '"$STAGE/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib"' '"$STAGE/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG"' '"$STAGE/usr/bin/pgngfilter"'
+++ xxd -p -l4 build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
+++ tr -d '\n'
++ m=cafebabe
++ '[' cafebabe = cafebabe ']'
++ for f in '"$STAGE/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib"' '"$STAGE/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG"' '"$STAGE/usr/bin/pgngfilter"'
+++ xxd -p -l4 build/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG
+++ tr -d '\n'
++ m=cafebabe
++ '[' cafebabe = cafebabe ']'
++ for f in '"$STAGE/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib"' '"$STAGE/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG"' '"$STAGE/usr/bin/pgngfilter"'
+++ xxd -p -l4 build/usr/bin/pgngfilter
+++ tr -d '\n'
++ m=cafebabe
++ '[' cafebabe = cafebabe ']'
++ /usr/libexec/PlistBuddy -c 'Print :Filter:Bundles:0' build/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist
++ grep -q com.sykes.pgng.disabled
++ '[' -x build/usr/bin/pgngfilter ']'
++ echo '[4/4] 生成 control + postinst/postrm（对齐 Choicy 范式：rootless-compat + altlist + preferenceloader）'
+[4/4] 生成 control + postinst/postrm（对齐 Choicy 范式：rootless-compat + altlist + preferenceloader）
++ mkdir -p pkg/DEBIAN
++ cat
++ cp postinst pkg/DEBIAN/postinst
++ cp postrm pkg/DEBIAN/postrm
++ chmod 755 pkg/DEBIAN/postinst pkg/DEBIAN/postrm
++ echo '  postinst/postrm: 已添加（对齐 Choicy 范式）'
+  postinst/postrm: 已添加（对齐 Choicy 范式）
++ cp -a build/. pkg/
++ dpkg-deb -b -Zxz pkg com.sykes.perfectgrabberng_2.0.18_iphoneos-arm64e.deb
+dpkg-deb: warning: root directory pkg has unusual owner or group 501:20
+dpkg-deb: hint: you might need to pass --root-owner-group, see <https://wiki.debian.org/Teams/Dpkg/RootlessBuilds> for further details
+dpkg-deb: warning: ignoring 1 warning about the control file(s)
+dpkg-deb: building package 'com.sykes.perfectgrabberng' in 'com.sykes.perfectgrabberng_2.0.18_iphoneos-arm64e.deb'.
+++ wc -c
++ echo '  ->   174076 bytes'
+  ->   174076 bytes
++ echo 'BUILD_OK com.sykes.perfectgrabberng_2.0.18_iphoneos-arm64e.deb'
+BUILD_OK com.sykes.perfectgrabberng_2.0.18_iphoneos-arm64e.deb
