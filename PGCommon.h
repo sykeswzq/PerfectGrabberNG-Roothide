@@ -185,30 +185,28 @@ NS_INLINE BOOL PGDebugEnabled(void) {
 NS_INLINE NSString *PGAppBundleID(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (bid.length > 0) return bid;
+    // 安全兜底：只用进程启动路径，不枚举 _dyld 图片
     @try {
-        NSString *exe = nil;
-        // 启动路径（NSProcessInfo.arguments[0]）在构造函数期一定可用，优先于 _dyld
         NSArray *args = [[NSProcessInfo processInfo] arguments];
-        if (args.count) exe = args[0];
-        if (!exe.length) {
-            const char *m = _dyld_get_image_name(0);
-            if (m && m[0]) exe = [NSString stringWithUTF8String:m];
-        }
-        if (exe.length) {
-            NSString *dir = [exe stringByDeletingLastPathComponent];
-            for (int i = 0; i < 8 && dir.length; i++) {
-                NSString *plist = [dir stringByAppendingPathComponent:@"Info.plist"];
-                if ([[NSFileManager defaultManager] fileExistsAtPath:plist]) {
-                    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plist];
-                    NSString *b = info[@"CFBundleIdentifier"];
-                    if (b.length) return b;
+        if (args.count) {
+            NSString *exe = args[0];
+            if (exe.length) {
+                NSString *dir = [exe stringByDeletingLastPathComponent];
+                for (int i = 0; i < 8 && dir.length; i++) {
+                    NSString *plist = [dir stringByAppendingPathComponent:@"Info.plist"];
+                    if ([[NSFileManager defaultManager] fileExistsAtPath:plist]) {
+                        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plist];
+                        NSString *b = info[@"CFBundleIdentifier"];
+                        if (b.length) return b;
+                    }
+                    if ([[dir pathExtension] isEqualToString:@"app"]) break;
+                    dir = [dir stringByDeletingLastPathComponent];
                 }
-                if ([[dir pathExtension] isEqualToString:@"app"]) break;
-                dir = [dir stringByDeletingLastPathComponent];
             }
         }
     } @catch (NSException *e) {}
     return @"?";
+}
 }
 
 NS_INLINE BOOL PGIsSystemProcess(void) {
@@ -248,10 +246,9 @@ NS_INLINE NSTimeInterval PGDuration(void) {
 }
 
 // ============================================================
-// V2.0.27+: 安全版的额外函数（不遍历 _dyld_get_image_name）
+// V2.0.28: 安全的额外函数（无 _dyld 遍历风险）
 // ============================================================
 
-// 安全的 jbroot 路径获取：只用环境变量 + 软链目标，不枚举进程
 NS_INLINE NSString *PGJbRoot(void) {
     const char *env = getenv("JBROOT");
     if (env && env[0]) return [NSString stringWithUTF8String:env];
@@ -260,11 +257,8 @@ NS_INLINE NSString *PGJbRoot(void) {
     return @"/var/jb";
 }
 
-// 安全的"是否越狱管理器"判断：只检查 bundle ID，不枚举图片
-// 注意：这个判断只在构造期用于快速排除已知会崩的进程
 NS_INLINE BOOL PGIsJailbreakManager(void) {
     NSString *bid = PGAppBundleID();
-    // 只拦截明确的越狱管理 App，不枚举其他
     if ([bid isEqualToString:@"com.saurik.Cydia"]) return YES;
     if ([bid isEqualToString:@"com.opa334.TrollStore"]) return YES;
     if ([bid hasPrefix:@"com.repo"]) return YES;
