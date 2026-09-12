@@ -1,21 +1,14 @@
-// PGTweak.m —— V2.0.27：回归 V2.0.12 实机验证过的稳定方案
+// PGTweak.m —— V2.0.29：根治构造函数期 ObjC 崩溃
 //
-// 【历史教训（V2.0.20~V2.0.26 连续闪退的根因）】
-//   roothide 时代连续 7 个版本在窗口代码上瞎改，把 V2.0.12 注释里明确记录的
-//   「已知崩溃源」全部踩了一遍：
-//     1. 枚举 connectedScenes（V2.0.11 移除：游戏 scene 状态机被 hook，枚举会 SIGSEGV）
-//     2. windowLevel 用 Alert 级（V2.0.11 移除：触发 Metal 渲染同步崩溃，必须 Normal+1）
-//     3. UIWindow 不设 rootViewController（UIKit 后台布局线程会拿到野指针）
-//     4. 构造后 1 秒抢跑安装（App 还在启动中期，游戏引擎初始化中）
-//   V2.0.27 = 完整回归 V2.0.12 的浮层实现（实机验证过的代码），
-//            + 保留 V2.0.20+ 的 filter 基础设施（Bundles 白名单 + postinst chown）
+// 【V2.0.28 教训】构造函数期调用 NSProcessInfo/NSFileManager 等 ObjC API 是崩溃源
+//   - 构造期 ObjC 运行时可能未完全初始化
+//   - 必须用纯 C 代码（getprogname/strncmp/strstr）做进程过滤
+//   - ObjC 代码（日志、通知注册）推迟到 UIApplicationDidFinishLaunchingNotification
 //
-// 与 V2.0.12 的唯一差异：
-//   a) PGPassthroughView/strip/info/label 创建流程 100% 一致（含 AutoLayout）
-//   b) 移除了 V2.0.12 的 PGDebugEnabled/PGKeyDebug（面板已不再提供该开关，避免编译错误）
-//   c) 保留独立诊断日志 PGLog()（V2.0.26 的好东西，便于真机定位）
-//   d) 安装时机：DidFinishLaunching + DidBecomeActive 双通知 + 2 秒兜底（V2.0.12 原样）
-//   e) PGCommon.h 用 V2.0.26 版（三态判定 + filter 基础设施），不再依赖 PGKeyDebug
+// 【V2.0.29 修复】
+//   1. PGInit 构造函数只做 C 层过滤（不调 ObjC）
+//   2. ObjC 初始化（日志路径、通知注册）推迟到 pg_lazy_init()
+//   3. pg_lazy_init 在第一次 pg_install 前调用，确保 App 已就绪
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -24,34 +17,41 @@
 #import <mach-o/dyld.h>
 #import "PGCommon.h"
 
-#pragma mark - 诊断日志（V2.0.26 引入，保留）
+#pragma mark - 全局状态（懒加载）
 
-static void PGLog(NSString *s) {
+static NSString *sLogPath = nil;
+static int sNotifyToken = 0;
+
+#pragma mark - 诊断日志（C 层路径，避免构造期 ObjC）
+
+static void PGLog(const char *msg) {
+    if (!sLogPath) return;
     @try {
-        static NSString *path = nil;
-        static BOOL tried = NO;
-        if (!tried) {
-            tried = YES;
-            NSFileManager *fm = [NSFileManager defaultManager];
-            NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            NSMutableArray *cands = [NSMutableArray array];
-            if (doc.length) [cands addObject:[doc stringByAppendingPathComponent:@"pgng_diag.log"]];
-            [cands addObject:@"/var/mobile/pgng_diag.log"];
-            [cands addObject:[PGJbRoot() stringByAppendingPathComponent:@"var/mobile/pgng_diag.log"]];
-            for (NSString *p in cands) {
-                if ([fm fileExistsAtPath:p] ||
-                    [@"" writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:NULL]) {
-                    path = p; break;
-                }
-            }
-        }
-        if (!path.length) return;
-        NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], s];
-        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:path];
+        NSString *line = [NSString stringWithFormat:@"%s | %@\n", msg, [NSDate date]];
+        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:sLogPath];
         if (h) {
             [h seekToEndOfFile];
             [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
             [h closeFile];
+        }
+    } @catch (NSException *e) {}
+}
+
+static void PGInitLogPath(void) {
+    if (sLogPath) return;
+    @try {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSMutableArray *cands = [NSMutableArray array];
+        if (doc.length) [cands addObject:[doc stringByAppendingPathComponent:@"pgng_diag.log"]];
+        [cands addObject:@"/var/mobile/pgng_diag.log"];
+        [cands addObject:[PGJbRoot() stringByAppendingPathComponent:@"var/mobile/pgng_diag.log"]];
+        for (NSString *p in cands) {
+            if ([fm fileExistsAtPath:p] ||
+                [@"" writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:NULL]) {
+                sLogPath = p;
+                break;
+            }
         }
     } @catch (NSException *e) {}
 }
@@ -107,7 +107,8 @@ static void PGLog(NSString *s) {
 
 - (void)pg_install {
     if (_window) return;
-    if (!PGEnabled()) { PGLog(@"install: 总开关关闭"); return; }
+    PGLazyInit();  // V2.0.29：懒加载 ObjC 初始化
+    if (!PGEnabled()) { PGLog("install: 总开关关闭"); return; }
     if (!PGCurrentAppSelected()) {
         PGLog([NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()]);
         return;
@@ -212,7 +213,7 @@ static void PGLog(NSString *s) {
         // ★ V2.0.11 教训：禁用电池监控 API 调用（游戏进程 hook 导致崩溃），pg_updateText 里同理
         // （电量从 batteryLevel 直接读，无需 monitoringEnabled；pg_show 里不再启用监控）
 
-        PGLog(@"install: V2.0.27 窗口创建成功（V2.0.12 方案回归）");
+        PGLog("install: V2.0.29 窗口创建成功（构造函数纯 C 过滤，无 ObjC 调用）");
       } @catch (NSException *e) {
         PGLog([NSString stringWithFormat:@"install: 异常 %@", e.reason]);
       }
@@ -300,37 +301,20 @@ static void PGLog(NSString *s) {
 
 @end
 
-#pragma mark - 入口（V2.0.12 原样：双通知 + 兜底）
+#pragma mark - ObjC 懒加载（V2.0.29 新增）
 
-__attribute__((constructor))
-static void PGInit(void) {
-    // V2.0.28 修复：移除 _dyld_get_image_name(0) 遍历（游戏进程 hook 后枚举会 SIGSEGV）
-    // 改用 NSProcessInfo 获取启动路径，纯 C 层快速过滤系统目录
-    @autoreleasepool {
-        // 快速 C 层白名单：避免不必要的 ObjC 开销
-        const char *exe = [[[NSProcessInfo processInfo] arguments] firstObject] UTF8String];
-        if (exe) {
-            if (strncmp(exe, "/System", 7) == 0) return;
-            if (strncmp(exe, "/usr", 4) == 0) return;
-            if (strncmp(exe, "/bin", 4) == 0) return;
-            if (strncmp(exe, "/sbin", 5) == 0) return;
-            if (strncmp(exe, "/Library", 8) == 0) return;
-            if (strstr(exe, "SpringBoard")) return;
-            if (strstr(exe, "/var/jb")) return;
-            if (strstr(exe, "/var/lib")) return;
-            if (!strstr(exe, ".app/")) return;
-        }
-
-        if (PGIsSystemProcess()) return;
-        if (PGIsJailbreakManager()) return;
-
-        PGLog([NSString stringWithFormat:@"init: bid=%@", PGAppBundleID()]);
-
-        int token = 0;
-        notify_register_dispatch(PGNotifyName, &token, dispatch_get_main_queue(), ^(int t) {
+static void PGLazyInit(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        PGInitLogPath();
+        
+        NSString *bid = [NSString stringWithUTF8String:getprogname()];
+        PGLog([NSString stringWithFormat:@"lazy_init: bid=%@", bid]);
+        
+        notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
             [[PGOverlay shared] pg_reload];
         });
-
+        
         // V2.0.12 原样：双通知 + 2 秒兜底（不抢跑，等 App 就绪）
         void (^tryInstall)(void) = ^{
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
@@ -354,5 +338,33 @@ static void PGInit(void) {
                 [[PGOverlay shared] pg_install];
             }
         });
-    }
+    });
+}
+
+#pragma mark - 入口（V2.0.29：构造函数纯 C 过滤，ObjC 推迟到通知回调）
+
+__attribute__((constructor))
+static void PGInit(void) {
+    // V2.0.29 修复：构造函数期只做 C 层过滤，不调任何 ObjC API
+    // 使用 getprogname() 获取启动路径（POSIX 标准，构造期安全）
+    const char *exe = getprogname();
+    if (!exe) return;
+    
+    // 纯 C 层白名单过滤（不调 ObjC）
+    if (strncmp(exe, "/System", 7) == 0) return;
+    if (strncmp(exe, "/usr", 4) == 0) return;
+    if (strncmp(exe, "/bin", 4) == 0) return;
+    if (strncmp(exe, "/sbin", 5) == 0) return;
+    if (strncmp(exe, "/Library", 8) == 0) return;
+    if (strstr(exe, "SpringBoard")) return;
+    if (strstr(exe, "/var/jb")) return;
+    if (strstr(exe, "/var/lib")) return;
+    if (!strstr(exe, ".app/")) return;
+    
+    // C 层系统进程过滤（不调 ObjC）
+    if (PGIsSystemProcess()) return;
+    if (PGIsJailbreakManager()) return;
+    
+    // 记录 C 层日志（不调 ObjC）
+    PGLog("init: C 层过滤通过，准备 ObjC 初始化");
 }

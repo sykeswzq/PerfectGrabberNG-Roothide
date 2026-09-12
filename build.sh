@@ -6,9 +6,9 @@
 #   4) control 范式（借 Choicy 活样板）：Pre-Depends rootless-compat + Depends
 #      mobilesubstrate / com.opa334.altlist / preferenceloader，带 postinst/postrm 重启 runningboardd。
 #   V2.0.20 起：filter=静态 Bundles 占位符
-#   V2.0.28 起：干净版 PGCommon.h（无 _dyld 遍历），浮层代码保持 V2.0.27（app.windows 取 scene 绑定 + Normal+1 窗口级），
-#              根治 V2.0.20~26 连续闪退（connectedScenes 枚举 / Alert 窗口级 / 无 rootVC / 1 秒抢跑）。
-#              filter 仍为 Bundles 占位符（com.sykes.pgng.disabled，零注入、不崩）。
+#   V2.0.29：根治构造函数期 ObjC 崩溃 —— PGInit 只做 C 层过滤（getprogname/strncmp/strstr），
+#            ObjC 日志和通知注册推迟到 pg_lazy_init()（在第一次 pg_install 前调用）。
+#            避免构造期调用 NSProcessInfo/NSFileManager 等 ObjC API 导致的崩溃。
 #   注入范围由「设置面板运行时写 filter」决定：用户在设置里勾选 App → PGSyncFilterPlist()
 #   把真 bid 写进 filter 的 Bundles。写权限靠 build.sh chmod 666 + postinst chown mobile 双保险，
 #   绕开 iOS 上失效的 setuid 提权（ad-hoc 签名的 setuid 二进制被内核降级成 mobile，写不进 root 文件）。
