@@ -180,32 +180,35 @@ NS_INLINE BOOL PGDebugEnabled(void) {
 // 可靠的 bundle ID 获取。
 // 关键坑：dylib 在「构造函数（加载期）」运行时 [NSBundle mainBundle] bundleIdentifier
 // 经常尚未初始化 -> 返回 nil（App Store 应用尤甚），导致被误判为系统进程而整体失效。
-// 这里在 mainBundle 取不到时，用 _dyld_get_image_name(0)（构造函数期一定可用）
 // 拿到主可执行文件路径，向上回退找 .app/Info.plist 解析 CFBundleIdentifier。
 NS_INLINE NSString *PGAppBundleID(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (bid.length > 0) return bid;
-    // 安全兜底：只用进程启动路径，绝不枚举 _dyld 图片
     @try {
+        NSString *exe = nil;
+        // 启动路径（NSProcessInfo.arguments[0]）在构造函数期一定可用，优先于 _dyld
         NSArray *args = [[NSProcessInfo processInfo] arguments];
-        if (args.count) {
-            NSString *exe = args[0];
-            if (exe.length) {
-                NSString *dir = [exe stringByDeletingLastPathComponent];
-                for (int i = 0; i < 8 && dir.length; i++) {
-                    NSString *plist = [dir stringByAppendingPathComponent:@"Info.plist"];
-                    if ([[NSFileManager defaultManager] fileExistsAtPath:plist]) {
-                        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plist];
-                        NSString *b = info[@"CFBundleIdentifier"];
-                        if (b.length) return b;
-                    }
-                    if ([[dir pathExtension] isEqualToString:@"app"]) break;
-                    dir = [dir stringByDeletingLastPathComponent];
+        if (args.count) exe = args[0];
+        if (!exe.length) {
+            const char *m = _dyld_get_image_name(0);
+            if (m && m[0]) exe = [NSString stringWithUTF8String:m];
+        }
+        if (exe.length) {
+            NSString *dir = [exe stringByDeletingLastPathComponent];
+            for (int i = 0; i < 8 && dir.length; i++) {
+                NSString *plist = [dir stringByAppendingPathComponent:@"Info.plist"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:plist]) {
+                    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plist];
+                    NSString *b = info[@"CFBundleIdentifier"];
+                    if (b.length) return b;
                 }
+                if ([[dir pathExtension] isEqualToString:@"app"]) break;
+                dir = [dir stringByDeletingLastPathComponent];
             }
         }
     } @catch (NSException *e) {}
     return @"?";
+}
 
 NS_INLINE BOOL PGIsSystemProcess(void) {
     // 只服务用户 App；系统进程（含 SpringBoard / 后台 daemon）一律排除，
@@ -244,7 +247,7 @@ NS_INLINE NSTimeInterval PGDuration(void) {
 }
 
 // ============================================================
-// V2.0.28: 安全的额外函数
+// V2.0.28: 安全的额外函数（无 _dyld 遍历风险）
 // ============================================================
 
 NS_INLINE NSString *PGJbRoot(void) {
