@@ -119,12 +119,8 @@ static void PGInitLogPath(void) {
         if (_window) return;
         UIApplication *app = [UIApplication sharedApplication];
         if (app == nil) return;
-        // ★ V2.0.11 教训：不检查 applicationState——原神启动期可能是 Background，
-        //   过早 return 会导致窗口不创建；游戏进程通知时序特殊，任何检查都可能误判。
 
         UIWindow *w = nil;
-        // ★ V2.0.11 教训：不枚举 connectedScenes（游戏 scene 状态机可能被 hook，枚举会 SIGSEGV）。
-        //   改用 app.windows 第一个带 scene 的 window，取不到则 initWithFrame: 兜底
         for (UIWindow *win in app.windows) {
             if (win.windowScene) {
                 w = [[UIWindow alloc] initWithWindowScene:win.windowScene];
@@ -136,11 +132,9 @@ static void PGInitLogPath(void) {
         }
 
         w.backgroundColor = [UIColor clearColor];
-        // ★ V2.0.11 教训：windowLevel 必须 Normal+1(≈201)，Alert 级会触发 Metal 渲染同步崩溃
         w.windowLevel = UIWindowLevelNormal + 1.0;
         w.userInteractionEnabled = YES;
 
-        // ★ V2.0.27 新增：rootViewController 必须设置（V2.0.25/26 缺失此步，UIKit 布局线程拿野指针）
         UIViewController *vc = [[UIViewController alloc] init];
         PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:w.bounds];
         cv.backgroundColor = [UIColor clearColor];
@@ -153,7 +147,6 @@ static void PGInitLogPath(void) {
         _window = w;
         _content = cv;
 
-        // 顶部触发条：高度 110（V2.0.12 原样，AutoLayout 锚点约束）
         UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
         strip.backgroundColor = [UIColor clearColor];
         strip.translatesAutoresizingMaskIntoConstraints = NO;
@@ -167,7 +160,6 @@ static void PGInitLogPath(void) {
         cv.pgHitView = strip;
         _strip = strip;
 
-        // 显示胶囊（V2.0.12 原样：AutoLayout，居中）
         UIView *info = [[UIView alloc] initWithFrame:CGRectZero];
         info.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
         info.layer.cornerRadius = 14.0;
@@ -199,21 +191,16 @@ static void PGInitLogPath(void) {
         ]];
         _label = lb;
 
-        // 手势：下拉超过 16pt 触发（V2.0.12 原样）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
         pan.cancelsTouchesInView = NO;
         [strip addGestureRecognizer:pan];
 
-        // 长按兜底（V2.0.12 原样）
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handleLongPress:)];
         lp.minimumPressDuration = 0.3;
         lp.cancelsTouchesInView = NO;
         [strip addGestureRecognizer:lp];
 
-        // ★ V2.0.11 教训：禁用电池监控 API 调用（游戏进程 hook 导致崩溃），pg_updateText 里同理
-        // （电量从 batteryLevel 直接读，无需 monitoringEnabled；pg_show 里不再启用监控）
-
-        PGLog("install: V2.0.29 窗口创建成功（构造函数纯 C 过滤，无 ObjC 调用）");
+        PGLog("install: V2.0.29 窗口创建成功");
       } @catch (NSException *e) {
         PGLog([NSString stringWithFormat:@"install: 异常 %@", e.reason]);
       }
@@ -246,7 +233,6 @@ static void PGInitLogPath(void) {
         g.state == UIGestureRecognizerStateChanged) {
         if (_pulled) return;
         CGPoint t = [g translationInView:_strip];
-        // 下拉超过 16pt 即触发：不卡速度门槛，缓慢下拉也能命中
         if (t.y > 16.0) {
             _pulled = YES;
             [self pg_show];
@@ -269,7 +255,6 @@ static void PGInitLogPath(void) {
     if (!PGCurrentAppSelected()) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!_label) return;
-        // ★ V2.0.11 教训：不碰电池监控 API（游戏 hook 下崩溃源）
         NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
         [fmt setDateFormat:@"HH:mm"];
         NSString *time = [fmt stringFromDate:[NSDate date]];
@@ -280,7 +265,6 @@ static void PGInitLogPath(void) {
         if (st == UIDeviceBatteryStateCharging || st == UIDeviceBatteryStateFull) bolt = @"⚡";
         _label.text = [NSString stringWithFormat:@"%@   %@%d%%", time, bolt, pct];
 
-        // V2.0.11: 移除动画，直接设置 alpha
         _infoView.alpha = 1.0;
         _infoView.transform = CGAffineTransformIdentity;
 
@@ -315,7 +299,6 @@ static void PGLazyInit(void) {
             [[PGOverlay shared] pg_reload];
         });
         
-        // V2.0.12 原样：双通知 + 2 秒兜底（不抢跑，等 App 就绪）
         void (^tryInstall)(void) = ^{
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -330,7 +313,6 @@ static void PGLazyInit(void) {
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) { tryInstall(); }];
-        // 兜底：dylib 在 App 已激活后才被注入的情况
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             UIApplication *app = [UIApplication sharedApplication];
@@ -345,12 +327,9 @@ static void PGLazyInit(void) {
 
 __attribute__((constructor))
 static void PGInit(void) {
-    // V2.0.29 修复：构造函数期只做 C 层过滤，不调任何 ObjC API
-    // 使用 getprogname() 获取启动路径（POSIX 标准，构造期安全）
     const char *exe = getprogname();
     if (!exe) return;
     
-    // 纯 C 层白名单过滤（不调 ObjC）
     if (strncmp(exe, "/System", 7) == 0) return;
     if (strncmp(exe, "/usr", 4) == 0) return;
     if (strncmp(exe, "/bin", 4) == 0) return;
@@ -360,11 +339,10 @@ static void PGInit(void) {
     if (strstr(exe, "/var/jb")) return;
     if (strstr(exe, "/var/lib")) return;
     if (!strstr(exe, ".app/")) return;
-
-    // V2.0.29 修复：不在构造函数期调用 PGIsSystemProcess/PGIsJailbreakManager，
-    // 因为它们内部会调用 PGAppBundleID() → NSProcessInfo（ObjC API）
-    // 系统进程过滤推迟到 PGLazyInit() 中进行
     
-    // 记录 C 层日志（不调 ObjC）
+    // 系统进程和越狱管理器检查推迟到 PGLazyInit 中
+    // 因为 PGIsSystemProcess/PGIsJailbreakManager 会调用 PGAppBundleID() → NSProcessInfo（ObjC API）
+    // 这在构造期可能崩溃
+    
     PGLog("init: C 层过滤通过，准备 ObjC 初始化");
 }
