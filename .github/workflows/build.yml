@@ -94,12 +94,3 @@ jobs:
           name: perfectgrabberng-deb
           path: "*.deb"
           retention-days: 30
-
-      - name: Commit deb back
-        run: |
-          git config user.email "sykeswzq@users.noreply.github.com"
-          git config user.name "sykeswzq"
-          git add "*.deb" || true
-          git commit -m "chore: build ${GITHUB_RUN_NUMBER} [skip ci]" || echo "no changes"
-          git pull --rebase origin main || true
-          git push origin main || true
