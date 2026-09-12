@@ -1,19 +1,18 @@
-// PGTweak.m —— V2.0.24：根治 roothide 下游戏进程注入闪退
+// PGTweak.m —— V2.0.25：独立 UIWindow 方案，根治游戏进程闪退
 //
-// 根因（基于10+版本的持续问题 + 代码分析）：
-//   V2.0.22/23 把 _content addSubview 到一个【缓存的 keyWindow 引用】。
-//   Unity/Metal 游戏在加载期/切场景时会销毁并重建 UIWindow，缓存引用变成野指针，
-//   addSubview 时 SIGSEGV。这是连续10个版本闪退的根本原因。
+// 根因分析（基于 H5GG/IMGUI Mod Menu 等成熟项目对比）：
+//   V2.0.24 每次 show 时实时查 keyWindow 然后 addSubview: 到游戏 window。
+//   但 Unity/Metal 游戏在加载/切场景时会销毁重建 UIWindow，此期间 Metal
+//   render command buffer 仍在提交，此时 addSubview: 会触发并发访问 → SIGSEGV。
+//   即使用 @try/@catch 也无法阻止 Metal 端的崩溃。
 //
-// V2.0.24 修复：
-//   ★ 移除 _hostWindow 缓存：每次 show 时实时查 UIApplication.shared.windows 的最新 keyWindow。
-//     游戏重建 window 后，下一次 show 自动拿到新 window，不再引用已销毁对象。
-//   ★ install() 只负责建视图层级，show 才负责添加/置顶。
-//     这样 install 时机无关紧要（即使 keyWindow 未就绪也不 crash）。
-//   ★ addSubview / bringSubviewToFront 用 @try/@catch 包一层，确保极端情况下不崩。
-//   ★ teardown 只 removeFromSuperview，不用释放 _hostWindow。
+// V2.0.25 根治方案（参考 H5GG/IMGUI Mod Menu）：
+//   ★ 创建独立 UIWindow（windowLevel = UIWindowLevelAlert - 1），不抢 keyWindow
+//   ★ 所有视图挂到独立窗口上，永不触碰游戏 window 层级
+//   ★ 用 setHidden: 控制显隐，不用 makeKeyAndVisible
+//   ★ 窗口只在激活时显示，切换回前台时自动刷新位置
 //
-// 参照基准：Netskao rootless（原神能跑）= 钩子 + initWithFrame addSubview 到已有窗口，不新建 UIWindow。
+// 参照基准：H5GG globalview（FloatWindow + setHidden，tested on iOS 11+）
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -22,7 +21,7 @@
 #import <mach-o/dyld.h>
 #import "PGCommon.h"
 
-#pragma mark - 诊断日志（写失败即静默）
+#pragma mark - 诊断日志
 
 static void PGLog(NSString *s) {
     @try {
@@ -78,7 +77,7 @@ static void PGLog(NSString *s) {
 }
 @end
 
-#pragma mark - 浮层（V2.0.24：无 UIWindow 缓存，实时取 keyWindow）
+#pragma mark - 浮层（V2.0.25：独立 UIWindow 方案）
 
 @interface PGOverlay : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -87,9 +86,11 @@ static void PGLog(NSString *s) {
 @end
 
 @implementation PGOverlay {
-    PGPassthroughView *_content;   // 顶层容器（addSubview 到当前 keyWindow）
-    UIView *_strip;        // 顶部触发条
-    UIView *_infoView;     // 时间+电量胶囊
+    // V2.0.25：独立 UIWindow，永不触碰游戏 window 层级
+    UIWindow *_pgWindow;
+    PGPassthroughView *_content;
+    UIView *_strip;
+    UIView *_infoView;
     UILabel *_label;
     BOOL _pulled;
     NSInteger _token;
@@ -103,30 +104,10 @@ static void PGLog(NSString *s) {
     return s;
 }
 
-#pragma mark - 实时取 keyWindow（V2.0.24 核心改动）
-
-// V2.0.24：不再缓存 keyWindow，每次调用实时查找。
-// 游戏重建 UIWindow 后，旧缓存引用会指向已释放对象 → crash。
-static UIWindow *_PGCurrentKeyWindow(void) {
-    UIApplication *app = [UIApplication sharedApplication];
-    if (!app) return nil;
-    // 优先 isKeyWindow 且可见
-    for (UIWindow *win in app.windows) {
-        if (win.isKeyWindow && !win.isHidden) return win;
-    }
-    // 兜底：任意可见窗口
-    for (UIWindow *win in app.windows) {
-        if (!win.isHidden) return win;
-    }
-    // 再兜底
-    if (app.keyWindow) return app.keyWindow;
-    return app.windows.lastObject;
-}
-
-#pragma mark - install：只建视图层级，不挂到 window
+#pragma mark - install：创建独立 UIWindow + 构建视图层级
 
 - (void)pg_install {
-    if (_content) return;
+    if (_content) return;  // 已安装
     if (!PGEnabled()) { PGLog(@"install: 总开关关闭"); return; }
     if (!PGCurrentAppSelected()) {
         PGLog([NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()]);
@@ -140,29 +121,44 @@ static UIWindow *_PGCurrentKeyWindow(void) {
       @try {
         if (_content) return;
 
-        // V2.0.24：建好视图后不挂 window，等 show 时再取实时 keyWindow 挂上去。
-        // 这样即使 install 时机早于 keyWindow 就绪，也不 crash。
+        // V2.0.25：获取当前屏幕 bounds（用于独立窗口全屏覆盖）
+        CGFloat screenWidth = 0, screenHeight = 0;
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if ([sc isKindOfClass:[UIWindowScene class]]) {
+                CGRect b = ((UIWindowScene *)sc).applicationFrame;
+                if (b.size.width > 0 && b.size.height > 0) {
+                    screenWidth = b.size.width;
+                    screenHeight = b.size.height;
+                    break;
+                }
+            }
+        }
+        if (screenWidth <= 0) screenWidth = [UIScreen mainScreen].bounds.size.width;
+        if (screenHeight <= 0) screenHeight = [UIScreen mainScreen].bounds.size.height;
 
-        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:CGRectZero];
+        // V2.0.25：创建独立 UIWindow，windowLevel 低于 Alert，不抢 keyWindow
+        // 关键：不调用 makeKeyAndVisible，只用 setHidden 控制显隐
+        UIWindow *win = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, screenWidth, screenHeight)];
+        win.windowLevel = UIWindowLevelAlert - 1;  // 高于普通但低于 Alert
+        win.backgroundColor = [UIColor clearColor];
+        win.hidden = YES;  // 初始隐藏
+        _pgWindow = win;
+
+        // 构建穿透容器
+        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:CGRectMake(0, 0, screenWidth, screenHeight)];
         cv.backgroundColor = [UIColor clearColor];
         cv.opaque = NO;
+        [_pgWindow addSubview:cv];
         _content = cv;
 
         // 顶部触发条（透明，高度 120）
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(0, 0, screenWidth, 120)];
         strip.backgroundColor = [UIColor clearColor];
-        strip.translatesAutoresizingMaskIntoConstraints = NO;
         [cv addSubview:strip];
-        [NSLayoutConstraint activateConstraints:@[
-            [strip.leadingAnchor constraintEqualToAnchor:cv.leadingAnchor],
-            [strip.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
-            [strip.topAnchor constraintEqualToAnchor:cv.topAnchor],
-            [strip.heightAnchor constraintEqualToConstant:120.0]
-        ]];
         cv.pgHitView = strip;
         _strip = strip;
 
-        // 状态栏高度：把胶囊挪到灵动岛下方
+        // 状态栏高度
         CGFloat sbh = 0;
         if (@available(iOS 13.0, *)) {
             for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
@@ -177,7 +173,7 @@ static UIWindow *_PGCurrentKeyWindow(void) {
         CGFloat infoTop = sbh + 4.0;
 
         // 时间+电量胶囊
-        UIView *info = [[UIView alloc] initWithFrame:CGRectZero];
+        UIView *info = [[UIView alloc] initWithFrame:CGRectMake((screenWidth - 140) / 2, infoTop, 140, 30)];
         info.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
         info.layer.cornerRadius = 14.0;
         info.layer.masksToBounds = YES;
@@ -185,14 +181,7 @@ static UIWindow *_PGCurrentKeyWindow(void) {
         info.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.35].CGColor;
         info.alpha = 0.0;
         info.userInteractionEnabled = YES;
-        info.translatesAutoresizingMaskIntoConstraints = NO;
         [strip addSubview:info];
-        [NSLayoutConstraint activateConstraints:@[
-            [info.centerXAnchor constraintEqualToAnchor:strip.centerXAnchor],
-            [info.topAnchor constraintEqualToAnchor:strip.topAnchor constant:infoTop],
-            [info.heightAnchor constraintEqualToConstant:30.0],
-            [info.widthAnchor constraintGreaterThanOrEqualToConstant:120.0]
-        ]];
         _infoView = info;
 
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
@@ -200,18 +189,12 @@ static UIWindow *_PGCurrentKeyWindow(void) {
         tap.cancelsTouchesInView = NO;
         [info addGestureRecognizer:tap];
 
-        UILabel *lb = [[UILabel alloc] initWithFrame:CGRectZero];
+        UILabel *lb = [[UILabel alloc] initWithFrame:info.bounds];
         lb.textColor = [UIColor whiteColor];
         lb.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
         lb.textAlignment = NSTextAlignmentCenter;
-        lb.translatesAutoresizingMaskIntoConstraints = NO;
+        lb.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [info addSubview:lb];
-        [NSLayoutConstraint activateConstraints:@[
-            [lb.leadingAnchor constraintEqualToAnchor:info.leadingAnchor constant:12.0],
-            [lb.trailingAnchor constraintEqualToAnchor:info.trailingAnchor constant:-12.0],
-            [lb.topAnchor constraintEqualToAnchor:info.topAnchor],
-            [lb.bottomAnchor constraintEqualToAnchor:info.bottomAnchor]
-        ]];
         _label = lb;
 
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
@@ -231,12 +214,32 @@ static UIWindow *_PGCurrentKeyWindow(void) {
         lp.delegate = self;
         [strip addGestureRecognizer:lp];
 
-        PGLog(@"install: 视图层级建好（未挂 window，等 show 时实时取 keyWindow）");
+        PGLog(@"install: 独立 UIWindow 创建完成（不抢 keyWindow）");
 
-        // 自检：1 秒后尝试 show 一次（此时 keyWindow 应已就绪）
+        // 监听 foreground 通知，确保窗口在应用激活时显示
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *n) {
+            // 窗口已在，只需确保可见性
+            if (_pgWindow && !_pgWindow.hidden) return;
+            // 重新获取屏幕尺寸（可能旋转）
+            CGFloat w = [UIScreen mainScreen].bounds.size.width;
+            CGFloat h = [UIScreen mainScreen].bounds.size.height;
+            _pgWindow.frame = CGRectMake(0, 0, w, h);
+            _content.frame = CGRectMake(0, 0, w, h);
+            _pgWindow.hidden = NO;
+            PGLog(@"install: 应用激活，独立窗口显示");
+        }];
+
+        // 1 秒后自检：确保窗口正确显示
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self pg_showFor:2.0];
+            if (!_pgWindow.hidden) {
+                [self pg_showFor:2.0];
+            } else {
+                PGLog(@"install: 等待应用激活...");
+            }
         });
       } @catch (NSException *e) {
           PGLog([NSString stringWithFormat:@"install: 异常 %@", e.reason]);
@@ -256,14 +259,15 @@ static UIWindow *_PGCurrentKeyWindow(void) {
     }
 }
 
-#pragma mark - teardown：只 removeFromSuperview，释放引用
+#pragma mark - teardown：完整清理
 
 - (void)pg_teardown {
     dispatch_async(dispatch_get_main_queue(), ^{
         [_keepTimer invalidate]; _keepTimer = nil;
-        _content.pgHitView = nil;
-        [_content removeFromSuperview];
+        [_pgWindow removeFromSuperview];
+        _pgWindow = nil;
         _content = nil; _strip = nil; _infoView = nil; _label = nil;
+        PGLog(@"teardown: 独立窗口已清理");
     });
 }
 
@@ -294,7 +298,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
     if (g.state == UIGestureRecognizerStateBegan) { PGLog(@"trigger: longpress"); [self pg_show]; }
 }
 
-#pragma mark - show / hide（V2.0.24：实时取 keyWindow）
+#pragma mark - show / hide
 
 - (void)pg_show {
     [self pg_showFor:PGDuration()];
@@ -302,24 +306,13 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 
 - (void)pg_showFor:(NSTimeInterval)d {
     if (!PGEnabled() || !PGCurrentAppSelected()) return;
+    if (!_pgWindow || !_content || !_label) return;
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!_content || !_label) return;
-
-        // V2.0.24：每次 show 都实时取 keyWindow，不依赖缓存引用。
-        // 游戏重建 window 后，这里能拿到最新的有效 window。
-        UIWindow *kw = _PGCurrentKeyWindow();
-        if (!kw) { PGLog(@"show: 暂无 keyWindow，跳过"); return; }
-
-        // 确保 _content 在当前 keyWindow 上（游戏重建 window 时可能被孤立）
-        if (_content.superview != kw) {
-            @try {
-                [kw addSubview:_content];
-                [kw bringSubviewToFront:_content];
-                PGLog(@"show: 重新挂到最新 keyWindow");
-            } @catch (NSException *e) {
-                PGLog([NSString stringWithFormat:@"show: addSubview 异常 %@", e.reason]);
-                return;
-            }
+        // V2.0.25：直接操作独立窗口，不触碰游戏 window
+        if (_pgWindow.hidden) {
+            _pgWindow.hidden = NO;
+            PGLog(@"show: 独立窗口显示");
         }
 
         [self pg_updateText];
@@ -392,7 +385,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 
 __attribute__((constructor))
 static void PGInit(void) {
-    // 纯 C 层白名单：在 ObjC 之前过滤掉系统/越狱进程，杜绝安全模式崩溃。
+    // 纯 C 层白名单：在 ObjC 之前过滤掉系统/越狱进程
     const char *img0 = _dyld_get_image_name(0);
     if (!img0 || !img0[0]) return;
     const char *p = img0;
@@ -417,18 +410,10 @@ static void PGInit(void) {
             [[PGOverlay shared] pg_reload];
         });
 
-        // 构造后 1 秒兜底（覆盖 roothide 注入过晚、通知已错过的情况）
+        // 构造后 1 秒启动安装（游戏进程初始化完成后）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[PGOverlay shared] pg_install];
         });
-
-        // DidBecomeActive 时也重试（游戏启动后 window 已就绪）
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                          object:nil
-                                                           queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *n) {
-            [[PGOverlay shared] pg_install];
-        }];
     }
 }

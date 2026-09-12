@@ -5,7 +5,8 @@
 #   3) ldid -M -S 重签（ad-hoc），dylib 旁放 0 字节 .roothidepatch 注入标记
 #   4) control 范式（借 Choicy 活样板）：Pre-Depends rootless-compat + Depends
 #      mobilesubstrate / com.opa334.altlist / preferenceloader，带 postinst/postrm 重启 runningboardd。
-#   V2.0.20 起：filter=静态 Bundles 占位符（com.sykes.pgng.disabled，零注入、不崩）。
+#   V2.0.20 起：filter=静态 Bundles 占位符
+#   V2.0.25 起：改用独立 UIWindow 方案，根治游戏进程闪退（com.sykes.pgng.disabled，零注入、不崩）。
 #   注入范围由「设置面板运行时写 filter」决定：用户在设置里勾选 App → PGSyncFilterPlist()
 #   把真 bid 写进 filter 的 Bundles。写权限靠 build.sh chmod 666 + postinst chown mobile 双保险，
 #   绕开 iOS 上失效的 setuid 提权（ad-hoc 签名的 setuid 二进制被内核降级成 mobile，写不进 root 文件）。
@@ -14,7 +15,7 @@ cd "$(dirname "$0")"
 
 PKG=com.sykes.perfectgrabberng
 NAME="下拉时间电量 NG"
-VER=2.0.24
+VER=2.0.25
 ARCH="iphoneos-arm64e"
 OUT="com.sykes.perfectgrabberng_${VER}_${ARCH}.deb"
 # roothide 规范的 install name（对齐 Choicy 活样板）。
