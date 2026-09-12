@@ -1,18 +1,14 @@
-// PGTweak.m —— V2.0.25：独立 UIWindow 方案，根治游戏进程闪退
+// PGTweak.m —— V2.0.26：修复 iOS 13+ 窗口不显示问题
 //
-// 根因分析（基于 H5GG/IMGUI Mod Menu 等成熟项目对比）：
-//   V2.0.24 每次 show 时实时查 keyWindow 然后 addSubview: 到游戏 window。
-//   但 Unity/Metal 游戏在加载/切场景时会销毁重建 UIWindow，此期间 Metal
-//   render command buffer 仍在提交，此时 addSubview: 会触发并发访问 → SIGSEGV。
-//   即使用 @try/@catch 也无法阻止 Metal 端的崩溃。
+// 根因（V2.0.25 崩溃）：
+//   用 initWithFrame: 创建的 UIWindow 在 iOS 13+ 必须绑定到 UIWindowScene 才会真正显示。
+//   游戏进程可能只有特定 activationState 的 scene，绑错 scene 会导致窗口不可见或崩溃。
 //
-// V2.0.25 根治方案（参考 H5GG/IMGUI Mod Menu）：
-//   ★ 创建独立 UIWindow（windowLevel = UIWindowLevelAlert - 1），不抢 keyWindow
-//   ★ 所有视图挂到独立窗口上，永不触碰游戏 window 层级
+// V2.0.26 修复（参考 H5GG/IMGUI Mod Menu 成熟方案）：
+//   ★ 使用 initWithWindowScene: 而不是 initWithFrame:
+//   ★ 优先取 ForegroundActive scene，降级到 ForegroundInactive，再降级到任意 scene
+//   ★ 保持独立 UIWindow，永不触碰游戏 window 层级
 //   ★ 用 setHidden: 控制显隐，不用 makeKeyAndVisible
-//   ★ 窗口只在激活时显示，切换回前台时自动刷新位置
-//
-// 参照基准：H5GG globalview（FloatWindow + setHidden，tested on iOS 11+）
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -121,14 +117,45 @@ static void PGLog(NSString *s) {
       @try {
         if (_content) return;
 
-        // V2.0.25：获取当前屏幕 bounds（用于独立窗口全屏覆盖）
-        CGRect screenBounds = [UIScreen mainScreen].bounds;
+        // V2.0.26：获取合适的 UIWindowScene（参考 H5GG makeWindow 逻辑）
+        // 优先级：ForegroundActive > ForegroundInactive > 任意 scene
+        UIWindowScene *targetScene = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            if (ws.activationState == UISceneActivationStateForegroundActive) {
+                targetScene = ws;
+                break;
+            }
+        }
+        // 降级：找 ForegroundInactive
+        if (!targetScene) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                if (ws.activationState == UISceneActivationStateForegroundInactive) {
+                    targetScene = ws;
+                    break;
+                }
+            }
+        }
+        // 再降级：任意可用的 scene
+        if (!targetScene) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    targetScene = (UIWindowScene *)scene;
+                    break;
+                }
+            }
+        }
+
+        // V2.0.26：用 initWithWindowScene: 创建独立 UIWindow（不抢 keyWindow）
+        // 关键：不调用 makeKeyAndVisible，只用 setHidden 控制显隐
+        CGRect screenBounds = targetScene ? targetScene.coordinateSpace.bounds : [UIScreen mainScreen].bounds;
         CGFloat screenWidth = screenBounds.size.width;
         CGFloat screenHeight = screenBounds.size.height;
-
-        // V2.0.25：创建独立 UIWindow，windowLevel 低于 Alert，不抢 keyWindow
-        // 关键：不调用 makeKeyAndVisible，只用 setHidden 控制显隐
-        UIWindow *win = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, screenWidth, screenHeight)];
+        UIWindow *win = [[UIWindow alloc] initWithWindowScene:targetScene];
+        win.frame = screenBounds;
         win.windowLevel = UIWindowLevelAlert - 1;  // 高于普通但低于 Alert
         win.backgroundColor = [UIColor clearColor];
         win.hidden = YES;  // 初始隐藏
