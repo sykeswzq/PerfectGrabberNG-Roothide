@@ -189,10 +189,7 @@ NS_INLINE NSString *PGAppBundleID(void) {
         // 启动路径（NSProcessInfo.arguments[0]）在构造函数期一定可用，优先于 _dyld
         NSArray *args = [[NSProcessInfo processInfo] arguments];
         if (args.count) exe = args[0];
-        if (!exe.length) {
-            const char *m = _dyld_get_image_name(0);
-            if (m && m[0]) exe = [NSString stringWithUTF8String:m];
-        }
+
         if (exe.length) {
             NSString *dir = [exe stringByDeletingLastPathComponent];
             for (int i = 0; i < 8 && dir.length; i++) {
