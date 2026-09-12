@@ -308,7 +308,7 @@ static void PGInit(void) {
     // 改用 NSProcessInfo 获取启动路径，纯 C 层快速过滤系统目录
     @autoreleasepool {
         // 快速 C 层白名单：避免不必要的 ObjC 开销
-        const char *exe = [[[NSProcessInfo processInfo] arguments] firstObject UTF8String];
+        const char *exe = [[[NSProcessInfo processInfo] arguments] firstObject] UTF8String];
         if (exe) {
             if (strncmp(exe, "/System", 7) == 0) return;
             if (strncmp(exe, "/usr", 4) == 0) return;
