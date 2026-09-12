@@ -304,25 +304,27 @@ static void PGLog(NSString *s) {
 
 __attribute__((constructor))
 static void PGInit(void) {
-    // 纯 C 层白名单（V2.0.26 的好东西，保留）：ObjC 之前过滤掉系统/越狱进程
-    const char *img0 = _dyld_get_image_name(0);
-    if (!img0 || !img0[0]) return;
-    const char *p = img0;
-    if (strncmp(p, "/System", 7) == 0) return;
-    if (strncmp(p, "/usr", 4) == 0) return;
-    if (strncmp(p, "/bin", 4) == 0) return;
-    if (strncmp(p, "/sbin", 5) == 0) return;
-    if (strncmp(p, "/Library", 8) == 0) return;
-    if (strstr(p, "SpringBoard")) return;
-    if (strstr(p, "/var/jb")) return;
-    if (strstr(p, "/var/lib")) return;
-    if (!strstr(p, ".app/")) return;
-
+    // V2.0.28 修复：移除 _dyld_get_image_name(0) 遍历（游戏进程 hook 后枚举会 SIGSEGV）
+    // 改用 NSProcessInfo 获取启动路径，纯 C 层快速过滤系统目录
     @autoreleasepool {
+        // 快速 C 层白名单：避免不必要的 ObjC 开销
+        const char *exe = [[NSProcessInfo processInfo] arguments][0] UTF8String];
+        if (exe) {
+            if (strncmp(exe, "/System", 7) == 0) return;
+            if (strncmp(exe, "/usr", 4) == 0) return;
+            if (strncmp(exe, "/bin", 4) == 0) return;
+            if (strncmp(exe, "/sbin", 5) == 0) return;
+            if (strncmp(exe, "/Library", 8) == 0) return;
+            if (strstr(exe, "SpringBoard")) return;
+            if (strstr(exe, "/var/jb")) return;
+            if (strstr(exe, "/var/lib")) return;
+            if (!strstr(exe, ".app/")) return;
+        }
+
         if (PGIsSystemProcess()) return;
         if (PGIsJailbreakManager()) return;
 
-        PGLog([NSString stringWithFormat:@"init: bid=%@ img=%s", PGAppBundleID(), img0]);
+        PGLog([NSString stringWithFormat:@"init: bid=%@", PGAppBundleID()]);
 
         int token = 0;
         notify_register_dispatch(PGNotifyName, &token, dispatch_get_main_queue(), ^(int t) {
