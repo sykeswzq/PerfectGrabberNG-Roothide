@@ -6,7 +6,7 @@
 #   4) control 范式（借 Choicy 活样板）：Pre-Depends rootless-compat + Depends
 #      mobilesubstrate / com.opa334.altlist / preferenceloader，带 postinst/postrm 重启 runningboardd。
 #   V2.0.20 起：filter=静态 Bundles 占位符
-#   V2.0.28 起：V2.0.27 闪退根因修复——PGCommon.h 回退到 V2.0.12 版本（不含 PGSyncFilterPlist 等可能导致 crash 的新增代码），PGTweak.m 保持 V2.0.27 已修复的浮层实现（app.windows 取 scene 绑定 + Normal+1 窗口级），
+#   V2.0.28 起：干净版 PGCommon.h（无 _dyld 遍历），浮层代码保持 V2.0.27（app.windows 取 scene 绑定 + Normal+1 窗口级），
 #              根治 V2.0.20~26 连续闪退（connectedScenes 枚举 / Alert 窗口级 / 无 rootVC / 1 秒抢跑）。
 #              filter 仍为 Bundles 占位符（com.sykes.pgng.disabled，零注入、不崩）。
 #   注入范围由「设置面板运行时写 filter」决定：用户在设置里勾选 App → PGSyncFilterPlist()

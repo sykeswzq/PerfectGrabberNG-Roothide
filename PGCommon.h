@@ -246,3 +246,27 @@ NS_INLINE NSTimeInterval PGDuration(void) {
     }
     return 2.0;                        // 默认 2 秒
 }
+
+// ============================================================
+// V2.0.27+: 安全版的额外函数（不遍历 _dyld_get_image_name）
+// ============================================================
+
+// 安全的 jbroot 路径获取：只用环境变量 + 软链目标，不枚举进程
+NS_INLINE NSString *PGJbRoot(void) {
+    const char *env = getenv("JBROOT");
+    if (env && env[0]) return [NSString stringWithUTF8String:env];
+    NSString *dest = [[NSFileManager defaultManager] destinationOfSymbolicLinkAtPath:@"/var/jb" error:NULL];
+    if (dest.length > 0) return dest;
+    return @"/var/jb";
+}
+
+// 安全的"是否越狱管理器"判断：只检查 bundle ID，不枚举图片
+// 注意：这个判断只在构造期用于快速排除已知会崩的进程
+NS_INLINE BOOL PGIsJailbreakManager(void) {
+    NSString *bid = PGAppBundleID();
+    // 只拦截明确的越狱管理 App，不枚举其他
+    if ([bid isEqualToString:@"com.saurik.Cydia"]) return YES;
+    if ([bid isEqualToString:@"com.opa334.TrollStore"]) return YES;
+    if ([bid hasPrefix:@"com.repo"]) return YES;
+    return NO;
+}
