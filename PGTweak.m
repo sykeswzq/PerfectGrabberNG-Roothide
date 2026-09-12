@@ -360,10 +360,10 @@ static void PGInit(void) {
     if (strstr(exe, "/var/jb")) return;
     if (strstr(exe, "/var/lib")) return;
     if (!strstr(exe, ".app/")) return;
-    
-    // C 层系统进程过滤（不调 ObjC）
-    if (PGIsSystemProcess()) return;
-    if (PGIsJailbreakManager()) return;
+
+    // V2.0.29 修复：不在构造函数期调用 PGIsSystemProcess/PGIsJailbreakManager，
+    // 因为它们内部会调用 PGAppBundleID() → NSProcessInfo（ObjC API）
+    // 系统进程过滤推迟到 PGLazyInit() 中进行
     
     // 记录 C 层日志（不调 ObjC）
     PGLog("init: C 层过滤通过，准备 ObjC 初始化");
