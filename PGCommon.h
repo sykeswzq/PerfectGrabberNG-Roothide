@@ -185,7 +185,7 @@ NS_INLINE BOOL PGDebugEnabled(void) {
 NS_INLINE NSString *PGAppBundleID(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (bid.length > 0) return bid;
-    // 安全兜底：只用进程启动路径，不枚举 _dyld 图片
+    // 安全兜底：只用进程启动路径，绝不枚举 _dyld 图片
     @try {
         NSArray *args = [[NSProcessInfo processInfo] arguments];
         if (args.count) {
@@ -206,8 +206,6 @@ NS_INLINE NSString *PGAppBundleID(void) {
         }
     } @catch (NSException *e) {}
     return @"?";
-}
-}
 
 NS_INLINE BOOL PGIsSystemProcess(void) {
     // 只服务用户 App；系统进程（含 SpringBoard / 后台 daemon）一律排除，
@@ -246,7 +244,7 @@ NS_INLINE NSTimeInterval PGDuration(void) {
 }
 
 // ============================================================
-// V2.0.28: 安全的额外函数（无 _dyld 遍历风险）
+// V2.0.28: 安全的额外函数
 // ============================================================
 
 NS_INLINE NSString *PGJbRoot(void) {
