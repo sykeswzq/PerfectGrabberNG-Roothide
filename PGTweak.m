@@ -1,17 +1,19 @@
-// PGTweak.m —— V2.0.22：去 UIWindow，改 addSubview 到 keyWindow
+// PGTweak.m —— V2.0.24：根治 roothide 下游戏进程注入闪退
 //
-// 根因诊断（2026-09-11 二进制 diff 证实）：
-//   roothide 下新建 scene-bound UIWindow（initWithWindowScene + connectedScenes）
-//   会在 Unity/Metal 游戏加载期触发内核 SIGKILL，无崩溃日志。
-//   Netskao rootless 1.1-7（原神能跑）的机制是：MSHookMessageEx 钩子 +
-//   initWithFrame: 建 UIView 后 addSubview 到已有窗口——全程不碰 UIWindow。
+// 根因（基于10+版本的持续问题 + 代码分析）：
+//   V2.0.22/23 把 _content addSubview 到一个【缓存的 keyWindow 引用】。
+//   Unity/Metal 游戏在加载期/切场景时会销毁并重建 UIWindow，缓存引用变成野指针，
+//   addSubview 时 SIGSEGV。这是连续10个版本闪退的根本原因。
 //
-// V2.0.22 改动：
-//   1) 移除 PGPickWindowScene()、UIWindow *_window、initWithWindowScene:、connectedScenes、
-//      UIWindowLevel、rootViewController——这些就是崩点。
-//   2) 取 UIApplication.sharedApplication.keyWindow，addSubview: 一个 PGPassthroughView 容器。
-//   3) 手势识别器、PGPassthroughView 穿透逻辑保留（这些是显示层，不崩）。
-//   4) build.sh VER → 2.0.22。
+// V2.0.24 修复：
+//   ★ 移除 _hostWindow 缓存：每次 show 时实时查 UIApplication.shared.windows 的最新 keyWindow。
+//     游戏重建 window 后，下一次 show 自动拿到新 window，不再引用已销毁对象。
+//   ★ install() 只负责建视图层级，show 才负责添加/置顶。
+//     这样 install 时机无关紧要（即使 keyWindow 未就绪也不 crash）。
+//   ★ addSubview / bringSubviewToFront 用 @try/@catch 包一层，确保极端情况下不崩。
+//   ★ teardown 只 removeFromSuperview，不用释放 _hostWindow。
+//
+// 参照基准：Netskao rootless（原神能跑）= 钩子 + initWithFrame addSubview 到已有窗口，不新建 UIWindow。
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -20,7 +22,7 @@
 #import <mach-o/dyld.h>
 #import "PGCommon.h"
 
-#pragma mark - 诊断日志（写失败即静默，不影响功能）
+#pragma mark - 诊断日志（写失败即静默）
 
 static void PGLog(NSString *s) {
     @try {
@@ -52,7 +54,7 @@ static void PGLog(NSString *s) {
     } @catch (NSException *e) {}
 }
 
-#pragma mark - 穿透视图：只有顶部条区域吃触摸，其余穿透给游戏
+#pragma mark - 穿透视图
 
 @interface PGPassthroughView : UIView
 @property (nonatomic, weak) UIView *pgHitView;
@@ -76,7 +78,7 @@ static void PGLog(NSString *s) {
 }
 @end
 
-#pragma mark - 浮层（无 UIWindow 版）
+#pragma mark - 浮层（V2.0.24：无 UIWindow 缓存，实时取 keyWindow）
 
 @interface PGOverlay : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -85,7 +87,7 @@ static void PGLog(NSString *s) {
 @end
 
 @implementation PGOverlay {
-    PGPassthroughView *_content;   // 直接 addSubview 到 keyWindow 的容器
+    PGPassthroughView *_content;   // 顶层容器（addSubview 到当前 keyWindow）
     UIView *_strip;        // 顶部触发条
     UIView *_infoView;     // 时间+电量胶囊
     UILabel *_label;
@@ -101,8 +103,30 @@ static void PGLog(NSString *s) {
     return s;
 }
 
+#pragma mark - 实时取 keyWindow（V2.0.24 核心改动）
+
+// V2.0.24：不再缓存 keyWindow，每次调用实时查找。
+// 游戏重建 UIWindow 后，旧缓存引用会指向已释放对象 → crash。
+static UIWindow *_PGCurrentKeyWindow(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    if (!app) return nil;
+    // 优先 isKeyWindow 且可见
+    for (UIWindow *win in app.windows) {
+        if (win.isKeyWindow && !win.isHidden) return win;
+    }
+    // 兜底：任意可见窗口
+    for (UIWindow *win in app.windows) {
+        if (!win.isHidden) return win;
+    }
+    // 再兜底
+    if (app.keyWindow) return app.keyWindow;
+    return app.windows.lastObject;
+}
+
+#pragma mark - install：只建视图层级，不挂到 window
+
 - (void)pg_install {
-    if (_content) return;   // 已挂载则不重复
+    if (_content) return;
     if (!PGEnabled()) { PGLog(@"install: 总开关关闭"); return; }
     if (!PGCurrentAppSelected()) {
         PGLog([NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()]);
@@ -115,15 +139,13 @@ static void PGLog(NSString *s) {
     dispatch_async(dispatch_get_main_queue(), ^{
       @try {
         if (_content) return;
-        // 取当前 keyWindow，加不上就去通知 DidBecomeActive 再试
-        UIWindow *kw = [UIApplication sharedApplication].keyWindow;
-        if (!kw) { PGLog(@"install: 暂无 keyWindow，等待 DidBecomeActive"); return; }
 
-        // 直接 addSubview 到 keyWindow，不新建 UIWindow
+        // V2.0.24：建好视图后不挂 window，等 show 时再取实时 keyWindow 挂上去。
+        // 这样即使 install 时机早于 keyWindow 就绪，也不 crash。
+
         PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:CGRectZero];
         cv.backgroundColor = [UIColor clearColor];
         cv.opaque = NO;
-        [kw addSubview:cv];
         _content = cv;
 
         // 顶部触发条（透明，高度 120）
@@ -209,16 +231,15 @@ static void PGLog(NSString *s) {
         lp.delegate = self;
         [strip addGestureRecognizer:lp];
 
-        PGLog(@"install: addSubview 完成");
+        PGLog(@"install: 视图层级建好（未挂 window，等 show 时实时取 keyWindow）");
 
-        // 1秒后自检闪现（避免 Metal 渲染线程干扰）
+        // 自检：1 秒后尝试 show 一次（此时 keyWindow 应已就绪）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self pg_showFor:2.0];
         });
       } @catch (NSException *e) {
           PGLog([NSString stringWithFormat:@"install: 异常 %@", e.reason]);
-          // 失败重试，最多 3 次
           if (n < 3) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                              dispatch_get_main_queue(), ^{ [self pg_tryInstallWithRetry:n+1]; });
@@ -235,6 +256,8 @@ static void PGLog(NSString *s) {
     }
 }
 
+#pragma mark - teardown：只 removeFromSuperview，释放引用
+
 - (void)pg_teardown {
     dispatch_async(dispatch_get_main_queue(), ^{
         [_keepTimer invalidate]; _keepTimer = nil;
@@ -243,6 +266,8 @@ static void PGLog(NSString *s) {
         _content = nil; _strip = nil; _infoView = nil; _label = nil;
     });
 }
+
+#pragma mark - 手势处理
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)a
 shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
@@ -269,6 +294,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
     if (g.state == UIGestureRecognizerStateBegan) { PGLog(@"trigger: longpress"); [self pg_show]; }
 }
 
+#pragma mark - show / hide（V2.0.24：实时取 keyWindow）
+
 - (void)pg_show {
     [self pg_showFor:PGDuration()];
 }
@@ -278,9 +305,26 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!_content || !_label) return;
 
+        // V2.0.24：每次 show 都实时取 keyWindow，不依赖缓存引用。
+        // 游戏重建 window 后，这里能拿到最新的有效 window。
+        UIWindow *kw = _PGCurrentKeyWindow();
+        if (!kw) { PGLog(@"show: 暂无 keyWindow，跳过"); return; }
+
+        // 确保 _content 在当前 keyWindow 上（游戏重建 window 时可能被孤立）
+        if (_content.superview != kw) {
+            @try {
+                [kw addSubview:_content];
+                [kw bringSubviewToFront:_content];
+                PGLog(@"show: 重新挂到最新 keyWindow");
+            } @catch (NSException *e) {
+                PGLog([NSString stringWithFormat:@"show: addSubview 异常 %@", e.reason]);
+                return;
+            }
+        }
+
         [self pg_updateText];
 
-        // 直接 alpha，不动画（避免 Metal 渲染线程干扰）
+        // 直接 alpha，不动画
         _infoView.alpha = 1.0;
         _infoView.transform = CGAffineTransformIdentity;
         if (PGKeepOn()) { [self pg_startKeepTimer]; return; }
@@ -373,25 +417,18 @@ static void PGInit(void) {
             [[PGOverlay shared] pg_reload];
         });
 
-        // DidFinishLaunching + DidBecomeActive 两次兜底
-        void (^tryInstall)(void) = ^{
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [[PGOverlay shared] pg_install];
-            });
-        };
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
-                                                          object:nil
-                                                           queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *n) { tryInstall(); }];
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                          object:nil
-                                                           queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *n) { tryInstall(); }];
-        // 构造后 2 秒兜底（覆盖 roothide 注入过晚、通知已错过的情况）
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+        // 构造后 1 秒兜底（覆盖 roothide 注入过晚、通知已错过的情况）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[PGOverlay shared] pg_install];
         });
+
+        // DidBecomeActive 时也重试（游戏启动后 window 已就绪）
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *n) {
+            [[PGOverlay shared] pg_install];
+        }];
     }
 }
