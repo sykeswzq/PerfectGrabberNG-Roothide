@@ -122,19 +122,9 @@ static void PGLog(NSString *s) {
         if (_content) return;
 
         // V2.0.25：获取当前屏幕 bounds（用于独立窗口全屏覆盖）
-        CGFloat screenWidth = 0, screenHeight = 0;
-        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-            if ([sc isKindOfClass:[UIWindowScene class]]) {
-                CGRect b = ((UIWindowScene *)sc).applicationFrame;
-                if (b.size.width > 0 && b.size.height > 0) {
-                    screenWidth = b.size.width;
-                    screenHeight = b.size.height;
-                    break;
-                }
-            }
-        }
-        if (screenWidth <= 0) screenWidth = [UIScreen mainScreen].bounds.size.width;
-        if (screenHeight <= 0) screenHeight = [UIScreen mainScreen].bounds.size.height;
+        CGRect screenBounds = [UIScreen mainScreen].bounds;
+        CGFloat screenWidth = screenBounds.size.width;
+        CGFloat screenHeight = screenBounds.size.height;
 
         // V2.0.25：创建独立 UIWindow，windowLevel 低于 Alert，不抢 keyWindow
         // 关键：不调用 makeKeyAndVisible，只用 setHidden 控制显隐
