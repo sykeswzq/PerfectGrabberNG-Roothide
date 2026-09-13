@@ -340,8 +340,8 @@
             NSArray *list = [[[self pg_selected] allObjects] sortedArrayUsingSelector:@selector(compare:)];
             PGSetValue(PGKeyApps, list);
         }
-        // 同步 filter：把勾选列表写入 filter plist，让 dylib 真正注入目标 App
-        PGSyncFilterPlist();
+        // V2.0.32: 不再调用 PGSyncFilterPlist()
+        // Filter 由 Roohide 白名单控制，设置面板只管理偏好数据
     } @catch (NSException *e) {}
 }
 
