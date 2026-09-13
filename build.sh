@@ -93,11 +93,11 @@ for f in "$DL" \
   [ "$m" = "cafebabe" ] || { echo "ERROR: $f Mach-O 头异常 magic=$m"; exit 1; }
 done
 # ★ filter 必须是 Bundles 白名单（不是 Classes 全局注入）。
-#   V2.0.32：使用通配符 ["*"]，由 Roohide 白名单控制注入范围。
+#   V2.0.32：使用占位符 "com.sykes.pgng.disabled"，由 Roohide 白名单控制注入范围。
 /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" "$FILTER" >/dev/null 2>&1 \
   || { echo "ERROR: filter 不是 Bundles 白名单"; exit 1; }
 B0="$(/usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" "$FILTER" 2>/dev/null)"
-echo "  filter Bundles[0]=$B0 （通配符，依赖 Roohide 白名单）"
+echo "  filter Bundles[0]=$B0 （占位符，依赖 Roohide 白名单）"
 
 echo "[4/4] 生成 control + postinst/postrm（对齐 Choicy 范式：rootless-compat + altlist + preferenceloader）"
 mkdir -p pkg/DEBIAN
