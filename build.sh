@@ -92,13 +92,12 @@ for f in "$DL" \
   m="$(xxd -p -l4 "$f" | tr -d '\n')"
   [ "$m" = "cafebabe" ] || { echo "ERROR: $f Mach-O 头异常 magic=$m"; exit 1; }
 done
-# ★ filter 必须是 Bundles 精准白名单（不是 Classes 全局注入）。
-#   Classes=[UIApplication] 会让 dylib 注入所有加载 UIKit 的进程 → 命中不该进的进程 → 安全模式（2.0.19 踩坑）。
-#   Bundles 初始为占位符 com.sykes.pgng.disabled（零注入、不崩），运行时由设置面板改写真 bid。
+# ★ filter 必须是 Bundles 白名单（不是 Classes 全局注入）。
+#   V2.0.32：使用通配符 ["*"]，由 Roohide 白名单控制注入范围。
 /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" "$FILTER" >/dev/null 2>&1 \
-  || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入 → 安全模式）"; exit 1; }
+  || { echo "ERROR: filter 不是 Bundles 白名单"; exit 1; }
 B0="$(/usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" "$FILTER" 2>/dev/null)"
-echo "  filter Bundles[0]=$B0 （占位符或真 bid 均可，运行时由设置面板改写）"
+echo "  filter Bundles[0]=$B0 （通配符，依赖 Roohide 白名单）"
 
 echo "[4/4] 生成 control + postinst/postrm（对齐 Choicy 范式：rootless-compat + altlist + preferenceloader）"
 mkdir -p pkg/DEBIAN
