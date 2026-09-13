@@ -295,7 +295,7 @@ static void PGLazyInit(void) {
         PGInitLogPath();
         
         NSString *bid = [NSString stringWithUTF8String:getprogname()];
-        PGLog([NSString stringWithFormat:@"lazy_init: bid=%@", bid]);
+        PGLog([NSString stringWithFormat:@"lazy_init: bid=%@", bid].UTF8String);
         
         notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
             [[PGOverlay shared] pg_reload];
