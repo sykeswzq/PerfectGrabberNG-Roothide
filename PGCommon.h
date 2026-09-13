@@ -262,3 +262,128 @@ NS_INLINE BOOL PGIsJailbreakManager(void) {
     if ([bid hasPrefix:@"com.repo"]) return YES;
     return NO;
 }
+
+// ============================================================
+// V2.0.29: 恢复被删除的关键函数
+// ============================================================
+
+#define PGKeyKeepOn @"keepOn"
+
+// 常驻显示：开启后时间电量一直挂在顶部，不依赖下拉手势
+NS_INLINE BOOL PGKeepOn(void) {
+    id v = PGValue(PGKeyKeepOn);
+    if (v == nil) return NO;
+    if ([v respondsToSelector:@selector(boolValue)]) return [v boolValue];
+    return NO;
+}
+
+// 把「注入 App 列表」写进 filter plist 的 Filter.Bundles
+NS_INLINE BOOL PGSyncFilterPlist(void) {
+    NSMutableString *log = [NSMutableString string];
+    @try {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSArray<NSString *> *cs = PGFilterPlistCandidates();
+        if (cs.count == 0) { PGSetDiag(@"无法推断 jbroot"); return NO; }
+        [log appendFormat:@"uid=%d euid=%d | 候选%lu", getuid(), geteuid(), (unsigned long)cs.count];
+        if (cs.count) [log appendFormat:@" | 首选=%@", cs.firstObject];
+
+        NSMutableArray *bundles = [NSMutableArray array];
+        id apps = PGValue(PGKeyApps);
+        if ([apps isKindOfClass:[NSArray class]]) {
+            for (id b in (NSArray *)apps) {
+                if (![b isKindOfClass:[NSString class]]) continue;
+                NSString *bid = (NSString *)b;
+                if (!bid.length) continue;
+                if ([bid isEqualToString:@"com.apple.springboard"]) continue;
+                if ([bid hasPrefix:@"com.apple."]) continue;
+                [bundles addObject:bid];
+            }
+        }
+        if (bundles.count == 0) bundles = [@[@"com.sykes.pgng.disabled"] mutableCopy];
+
+        NSError *serErr = nil;
+        NSData *data = [NSPropertyListSerialization
+                        dataWithPropertyList:@{@"Filter": @{@"Bundles": bundles}}
+                                      format:NSPropertyListXMLFormat_v1_0
+                                     options:0 error:&serErr];
+        if (!data.length) { PGSetDiag([log stringByAppendingString:@" | 序列化失败"]); return NO; }
+
+        NSString *stage = PGFilterStagePath;
+        for (NSString *dst in cs) {
+            NSString *link = [fm destinationOfSymbolicLinkAtPath:dst error:NULL];
+            if (link.length && [link isEqualToString:stage]) {
+                NSString *err = nil;
+                if (PGRawWrite(data, stage, &err) && [PGBundlesAtPath(dst) isEqualToArray:bundles]) {
+                    [log appendString:@" | 软链直写=成功"];
+                    PGSetDiag(log);
+                    return YES;
+                }
+                [log appendFormat:@" | 软链直写失败(%@)", err ?: @"回读校验不符"];
+                break;
+            }
+        }
+
+        NSString *serr = nil;
+        BOOL stageOK = PGRawWrite(data, stage, &serr);
+        [log appendFormat:@" | 中转=%@", stageOK ? @"OK" : [@"失败" stringByAppendingString:(serr ?: @"")]];
+
+        if (stageOK && cs.count) {
+            NSString *dst = cs.firstObject;
+            NSString *err = nil;
+            if (PGRawWrite(data, dst, &err) && [PGBundlesAtPath(dst) isEqualToArray:bundles]) {
+                [log appendString:@" | 直写=成功"];
+                PGSetDiag(log);
+                return YES;
+            }
+            [log appendFormat:@" | 直写失败(%@)", err ?: @"回读校验不符"];
+        }
+
+        if (stageOK && cs.count) {
+            NSString *dst = cs.firstObject;
+            NSString *st = nil;
+            int rc = PGRunHelper(@[stage, dst, PGFilterStatusPath], &st);
+            [log appendFormat:@" | helper%@", st ?: @"=?"];
+            if (rc == 0 && [PGBundlesAtPath(dst) isEqualToArray:bundles]) {
+                NSString *st2 = nil;
+                int rc2 = PGRunHelper(@[@"link", stage, dst, PGFilterStatusPath], &st2);
+                [log appendFormat:@" | 软链改造=%@", (rc2 == 0) ? @"成功(以后免提权)" : (st2 ?: @"失败")];
+                [log appendString:@" | 结果=成功"];
+                PGSetDiag(log);
+                return YES;
+            }
+        }
+
+        [log appendString:@" | 结果=失败"];
+        PGSetDiag(log);
+        return NO;
+    } @catch (NSException *e) {
+        [log appendString:@" | 异常"];
+        PGSetDiag(log);
+    }
+    return NO;
+}
+
+// 读回当前 filter plist 里实际生效的 Bundles
+NS_INLINE NSArray *PGFilterBundles(void) {
+    @try {
+        for (NSString *p in PGFilterPlistCandidates()) {
+            NSArray *b = PGBundlesAtPath(p);
+            if (b.count) return b;
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+// 诊断信息
+#define PGKeyFilterDiag @"filterDiag"
+NS_INLINE void PGSetDiag(NSString *s) {
+    @try {
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:PGPrefs()];
+        d[PGKeyFilterDiag] = s ?: @"";
+        [d writeToFile:PGPrefsWritePath() atomically:YES];
+    } @catch (NSException *e) {}
+}
+NS_INLINE NSString *PGDiag(void) {
+    id v = PGValue(PGKeyFilterDiag);
+    return [v isKindOfClass:[NSString class]] ? (NSString *)v : @"";
+}
