@@ -4,19 +4,14 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.20：恢复 Bundles 精准白名单（根治安全模式铁律：系统/越狱进程绝不在列表里）。
-		     初始占位符 com.sykes.pgng.disabled 不匹配任何真实进程 → 零注入 → 不崩。
-		     用户在设置里勾选 App 后，PGSyncFilterPlist() 把真 bid 写进这里。
-		     写权限由两道保险保证（绕开 iOS 上失效的 setuid 提权）：
-		       ① build.sh 打包时 chmod 666；
-		       ② postinst（root 身份、运行时根=jbroot）chown mobile:mobile + chmod 666。
-		     注入需两步（两道闸 AND）：
-		       ① RootHide 白名单版(roothideinject)加白目标 App；
-		       ② PGNG 设置里勾选该 App（写入此 filter 的 Bundles）。
-		     roothide 官方不向 SpringBoard/守护注入，且 Bundles 只含用户 App → 绝不进安全模式。 -->
+		<!-- V2.0.32：极简稳定版
+		     - 使用通配符 ["*"]，让 Roohide 白名单决定注入范围
+		     - 移除所有运行时 filter 写入逻辑（复杂操作导致崩溃）
+		     - 设置面板只写偏好，不碰 filter
+		     - 用户在 Roohide Manager 把 App 加白，dylib 才会注入 -->
 		<key>Bundles</key>
 		<array>
-			<string>com.sykes.pgng.disabled</string>
+			<string>*</string>
 		</array>
 	</dict>
 </dict>

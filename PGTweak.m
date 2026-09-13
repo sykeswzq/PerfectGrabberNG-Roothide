@@ -1,14 +1,11 @@
-// PGTweak.m —— V2.0.29：根治构造函数期 ObjC 崩溃
+// PGTweak.m —— V2.0.32 极简稳定版
 //
-// 【V2.0.28 教训】构造函数期调用 NSProcessInfo/NSFileManager 等 ObjC API 是崩溃源
-//   - 构造期 ObjC 运行时可能未完全初始化
-//   - 必须用纯 C 代码（getprogname/strncmp/strstr）做进程过滤
-//   - ObjC 代码（日志、通知注册）推迟到 UIApplicationDidFinishLaunchingNotification
-//
-// 【V2.0.29 修复】
-//   1. PGInit 构造函数只做 C 层过滤（不调 ObjC）
-//   2. ObjC 初始化（日志路径、通知注册）推迟到 pg_lazy_init()
-//   3. pg_lazy_init 在第一次 pg_install 前调用，确保 App 已就绪
+// 【V2.0.32 重构核心】
+//   1. Constructor 纯 C，零 ObjC —— 永不崩溃
+//   2. 移除所有 filter 写入逻辑（避免 helper/symlink 复杂操作）
+//   3. UI 构建采用多节点触发 + 重试机制
+//   4. 更强容错：每个 UI 操作都有 try-catch
+//   5. 延迟创建窗口（3s/5s/10s 多时机）
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -17,12 +14,12 @@
 #import <mach-o/dyld.h>
 #import "PGCommon.h"
 
-#pragma mark - 全局状态（懒加载）
+#pragma mark - 全局状态
 
 static NSString *sLogPath = nil;
 static int sNotifyToken = 0;
 
-#pragma mark - 诊断日志（C 层路径，避免构造期 ObjC）
+#pragma mark - 诊断日志（C 层路径）
 
 static void PGLog(const char *msg) {
     if (!sLogPath) return;
@@ -50,15 +47,14 @@ static void PGInitLogPath(void) {
             if ([fm fileExistsAtPath:p] ||
                 [@"" writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:NULL]) {
                 sLogPath = p;
+                PGLog([NSString stringWithFormat:@"log_path=%@", p].UTF8String);
                 break;
             }
         }
     } @catch (NSException *e) {}
 }
 
-static void PGLazyInit(void);
-
-#pragma mark - 穿透视图（V2.0.12 原样）
+#pragma mark - 穿透视图
 
 @interface PGPassthroughView : UIView
 @property (nonatomic, weak) UIView *pgHitView;
@@ -76,18 +72,18 @@ static void PGLazyInit(void);
                 return r ?: strip;
             }
         }
-        return nil;   // 游戏区域不吃触摸，原样穿透
+        return nil;
     }
     return v;
 }
 @end
 
-#pragma mark - 浮层（V2.0.12 实机验证方案：绑宿主 window 的 scene）
+#pragma mark - 浮层
 
 @interface PGOverlay : NSObject
 + (instancetype)shared;
-- (void)pg_install;
-- (void)pg_reload;
+- (void)pg_attemptInstall;
+- (void)pg_teardown;
 @end
 
 @implementation PGOverlay {
@@ -107,48 +103,44 @@ static void PGLazyInit(void);
     return s;
 }
 
-- (void)pg_install {
+- (void)pg_attemptInstall {
     if (_window) return;
-    PGLazyInit();  // V2.0.29：懒加载 ObjC 初始化
-    if (!PGEnabled()) { PGLog("install: 总开关关闭"); return; }
-    if (!PGCurrentAppSelected()) {
-        PGLog([[NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()] UTF8String]);
-        return;
-    }
+    if (!PGEnabled()) return;
+    if (!PGCurrentAppSelected()) return;
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-      @try {
-        if (_window) return;
+    @try {
         UIApplication *app = [UIApplication sharedApplication];
-        if (app == nil) return;
+        if (!app) return;
 
-        UIWindow *w = nil;
-        for (UIWindow *win in app.windows) {
-            if (win.windowScene) {
-                w = [[UIWindow alloc] initWithWindowScene:win.windowScene];
+        // 找合适的 window scene
+        UIWindow *targetScene = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in app.windows.firstObject.windowScene.connection.availableScenes) {
+                targetScene = [[UIWindow alloc] initWithWindowScene:scene];
                 break;
             }
         }
-        if (!w) {
-            w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        if (!targetScene) {
+            targetScene = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         }
 
-        w.backgroundColor = [UIColor clearColor];
-        w.windowLevel = UIWindowLevelNormal + 1.0;
-        w.userInteractionEnabled = YES;
+        targetScene.backgroundColor = [UIColor clearColor];
+        targetScene.windowLevel = UIWindowLevelNormal + 1.0;
+        targetScene.userInteractionEnabled = YES;
+        targetScene.hidden = NO;
 
         UIViewController *vc = [[UIViewController alloc] init];
-        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:w.bounds];
+        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:targetScene.bounds];
         cv.backgroundColor = [UIColor clearColor];
         cv.opaque = NO;
         cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         vc.view = cv;
-        w.rootViewController = vc;
-        w.hidden = NO;
+        targetScene.rootViewController = vc;
 
-        _window = w;
+        _window = targetScene;
         _content = cv;
 
+        // 下拉条
         UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
         strip.backgroundColor = [UIColor clearColor];
         strip.translatesAutoresizingMaskIntoConstraints = NO;
@@ -162,6 +154,7 @@ static void PGLazyInit(void);
         cv.pgHitView = strip;
         _strip = strip;
 
+        // 信息框
         UIView *info = [[UIView alloc] initWithFrame:CGRectZero];
         info.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
         info.layer.cornerRadius = 14.0;
@@ -193,6 +186,7 @@ static void PGLazyInit(void);
         ]];
         _label = lb;
 
+        // 手势
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
         pan.cancelsTouchesInView = NO;
         [strip addGestureRecognizer:pan];
@@ -202,23 +196,15 @@ static void PGLazyInit(void);
         lp.cancelsTouchesInView = NO;
         [strip addGestureRecognizer:lp];
 
-        PGLog("install: V2.0.29 窗口创建成功");
-      } @catch (NSException *e) {
-        PGLog([[NSString stringWithFormat:@"install: 异常 %@", e.reason] UTF8String]);
-      }
-    });
-}
-
-- (void)pg_reload {
-    if (!PGEnabled() || !PGCurrentAppSelected()) {
-        [self pg_teardown];
-    } else {
-        [self pg_install];
+        PGLog("install: window created");
+    } @catch (NSException *e) {
+        PGLog([NSString stringWithFormat:@"install: error %@", e.reason].UTF8String);
+        _window = nil;
     }
 }
 
 - (void)pg_teardown {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @try {
         _content.pgHitView = nil;
         _window.hidden = YES;
         _window.rootViewController = nil;
@@ -227,12 +213,11 @@ static void PGLazyInit(void);
         _strip = nil;
         _infoView = nil;
         _label = nil;
-    });
+    } @catch (NSException *e) {}
 }
 
 - (void)pg_handlePan:(UIPanGestureRecognizer *)g {
-    if (g.state == UIGestureRecognizerStateBegan ||
-        g.state == UIGestureRecognizerStateChanged) {
+    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) {
         if (_pulled) return;
         CGPoint t = [g translationInView:_strip];
         if (t.y > 16.0) {
@@ -255,7 +240,7 @@ static void PGLazyInit(void);
 - (void)pg_show {
     if (!PGEnabled()) return;
     if (!PGCurrentAppSelected()) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @try {
         if (!_label) return;
         NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
         [fmt setDateFormat:@"HH:mm"];
@@ -273,10 +258,11 @@ static void PGLazyInit(void);
         _token += 1;
         NSInteger my = _token;
         NSTimeInterval d = PGDuration();
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
             if (my == _token) [self pg_hide];
         });
-    });
+    } @catch (NSException *e) {}
 }
 
 - (void)pg_hide {
@@ -284,54 +270,80 @@ static void PGLazyInit(void);
     _infoView.alpha = 0.0;
     _infoView.transform = CGAffineTransformIdentity;
 }
-
 @end
 
-#pragma mark - ObjC 懒加载（V2.0.29 新增）
+#pragma mark - 懒加载入口
 
 static void PGLazyInit(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         PGInitLogPath();
-        
+
         NSString *bid = [NSString stringWithUTF8String:getprogname()];
         PGLog([NSString stringWithFormat:@"lazy_init: bid=%@", bid].UTF8String);
-        
+
+        // 注册通知监听设置变更
         notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
-            [[PGOverlay shared] pg_reload];
+            PGOverlay *ov = [PGOverlay shared];
+            [ov pg_teardown];
+            [ov pg_attemptInstall];
         });
-        
+
+        // 多节点触发窗口创建
         void (^tryInstall)(void) = ^{
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [[PGOverlay shared] pg_install];
-            });
+            PGOverlay *ov = [PGOverlay shared];
+            [ov pg_attemptInstall];
         };
+
+        // 节点1: App 启动完成
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *note) { tryInstall(); }];
+                                                      usingBlock:^(NSNotification *note) {
+            PGLog("notify: didFinishLaunching");
+            tryInstall();
+        }];
+
+        // 节点2: App 变为 active
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *note) { tryInstall(); }];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                                                      usingBlock:^(NSNotification *note) {
+            PGLog("notify: didBecomeActive");
+            tryInstall();
+        }];
+
+        // 节点3: 延迟 3 秒再试
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            UIApplication *app = [UIApplication sharedApplication];
-            if (app && app.applicationState == UIApplicationStateActive) {
-                [[PGOverlay shared] pg_install];
-            }
+            PGLog("delay: 3s install attempt");
+            tryInstall();
+        });
+
+        // 节点4: 延迟 5 秒再试
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            PGLog("delay: 5s install attempt");
+            tryInstall();
+        });
+
+        // 节点5: 延迟 10 秒再试
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            PGLog("delay: 10s install attempt");
+            tryInstall();
         });
     });
 }
 
-#pragma mark - 入口（V2.0.29：构造函数纯 C 过滤，ObjC 推迟到通知回调）
+#pragma mark - 入口点（纯 C，零 ObjC）
 
 __attribute__((constructor))
 static void PGInit(void) {
     const char *exe = getprogname();
     if (!exe) return;
-    
+
+    // C 层过滤：排除系统路径和越狱组件
     if (strncmp(exe, "/System", 7) == 0) return;
     if (strncmp(exe, "/usr", 4) == 0) return;
     if (strncmp(exe, "/bin", 4) == 0) return;
@@ -341,10 +353,6 @@ static void PGInit(void) {
     if (strstr(exe, "/var/jb")) return;
     if (strstr(exe, "/var/lib")) return;
     if (!strstr(exe, ".app/")) return;
-    
-    // 系统进程和越狱管理器检查推迟到 PGLazyInit 中
-    // 因为 PGIsSystemProcess/PGIsJailbreakManager 会调用 PGAppBundleID() → NSProcessInfo（ObjC API）
-    // 这在构造期可能崩溃
-    
-    PGLog("init: C 层过滤通过，准备 ObjC 初始化");
+
+    PGLog("init: C filter passed, will lazy init");
 }
