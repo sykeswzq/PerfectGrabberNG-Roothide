@@ -56,6 +56,8 @@ static void PGInitLogPath(void) {
     } @catch (NSException *e) {}
 }
 
+static void PGLazyInit(void);
+
 #pragma mark - 穿透视图（V2.0.12 原样）
 
 @interface PGPassthroughView : UIView
