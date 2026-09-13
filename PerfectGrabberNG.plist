@@ -6,7 +6,7 @@
 	<dict>
 		<key>Bundles</key>
 		<array>
-			<string>*</string>
+			<string>com.sykes.pgng.disabled</string>
 		</array>
 	</dict>
 </dict>
