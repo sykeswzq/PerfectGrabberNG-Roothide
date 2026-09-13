@@ -340,6 +340,8 @@
             NSArray *list = [[[self pg_selected] allObjects] sortedArrayUsingSelector:@selector(compare:)];
             PGSetValue(PGKeyApps, list);
         }
+        // 同步 filter：把勾选列表写入 filter plist，让 dylib 真正注入目标 App
+        PGSyncFilterPlist();
     } @catch (NSException *e) {}
 }
 
