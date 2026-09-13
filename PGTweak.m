@@ -204,7 +204,7 @@ static void PGLazyInit(void);
 
         PGLog("install: V2.0.29 窗口创建成功");
       } @catch (NSException *e) {
-        PGLog([NSString stringWithFormat:@"install: 异常 %@", e.reason]);
+        PGLog([[NSString stringWithFormat:@"install: 异常 %@", e.reason] UTF8String]);
       }
     });
 }
