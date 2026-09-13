@@ -4,11 +4,6 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!-- V2.0.32：极简稳定版
-		     - 使用通配符 ["*"]，让 Roohide 白名单决定注入范围
-		     - 移除所有运行时 filter 写入逻辑（复杂操作导致崩溃）
-		     - 设置面板只写偏好，不碰 filter
-		     - 用户在 Roohide Manager 把 App 加白，dylib 才会注入 -->
 		<key>Bundles</key>
 		<array>
 			<string>*</string>
