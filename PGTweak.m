@@ -112,7 +112,7 @@ static void PGLazyInit(void);
     PGLazyInit();  // V2.0.29：懒加载 ObjC 初始化
     if (!PGEnabled()) { PGLog("install: 总开关关闭"); return; }
     if (!PGCurrentAppSelected()) {
-        PGLog([NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()]);
+        PGLog([[NSString stringWithFormat:@"install: 未勾选 bid=%@", PGAppBundleID()] UTF8String]);
         return;
     }
 
