@@ -1,55 +1,30 @@
-// PGTweak.m —— V2.0.34 回归稳定版
+// PGTweak.m —— V2.0.38 极简安全版
 //
-// 【V2.0.34 修复】
-//   根因：v2.0.33 改用 PGLazyInit() 懒加载，若 UIApplicationDidFinishLaunchingNotification
-//         先于懒加载触发，通知 observer 永远不注册 → 窗口不创建 → 用户感知为"注入无效"。
-//         此外 pg_teardown 在 notify block 直接调用（非主队列 context 保护）存在竞争风险。
-//   修复：回归 v2.0.12 构造函数模式——构造期直接注册所有通知（无懒加载），
-//         所有 ObjC 包在 @autoreleasepool + @try/@catch 保护下。
-//   保留：v2.0.31 的安全 nil 检查（app.windows.firstObject && win.windowScene 判空）。
-//   版本：2.0.34（确保 > 2.0.31，Sileo 判定为更新可安装）
+// 策略：构造函数期完全不使用 ObjC，所有操作延迟到 3 秒后
+// 使用纯 C write() 写日志，零 ObjC 依赖
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <notify.h>
 #import <string.h>
+#import <unistd.h>
 #import <mach-o/dyld.h>
-#import "PGCommon.h"
 
 #pragma mark - 全局状态
 
-static NSString *sLogPath = nil;
+static char sExePath[1024] = {0};
 static int sNotifyToken = 0;
 static volatile BOOL sObserverRegistered = NO;
 
-#pragma mark - 诊断日志
+#pragma mark - 纯 C 日志（不依赖 NSString）
 
-// V2.0.36：纯 C 日志（write syscall），避免构造函数期调用 ObjC 方法
-static void PGLog(const char *msg) {
-    if (!sLogPath) return;
-    int fd = open([sLogPath fileSystemRepresentation], O_WRONLY | O_APPEND | O_CREAT, 0644);
+static void PGWriteLog(const char *msg) {
+    const char *logPath = "/var/mobile/pgng_diag.log";
+    int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
-        const char *newline = "\n";
         write(fd, msg, strlen(msg));
-        write(fd, newline, 1);
+        write(fd, "\n", 1);
         close(fd);
-    }
-}
-
-static void PGInitLogPath(void) {
-    // V2.0.36：用纯 C open，不调 NSFileManager（构造函数期不安全）
-    if (sLogPath) return;
-    const char *cands[] = {
-        "/var/mobile/pgng_diag.log",
-        "/tmp/pgng_diag.log"
-    };
-    for (int i = 0; i < 2; i++) {
-        int fd = open(cands[i], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            close(fd);
-            sLogPath = [NSString stringWithUTF8String:cands[i]];
-            return;
-        }
     }
 }
 
@@ -104,113 +79,101 @@ static void PGInitLogPath(void) {
 
 - (void)pg_install {
     if (_window) return;
-    if (!PGEnabled()) return;
-    if (!PGCurrentAppSelected()) return;
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            if (_window) return;
-            UIApplication *app = [UIApplication sharedApplication];
-            if (!app) return;
+    @try {
+        UIApplication *app = [UIApplication sharedApplication];
+        if (!app) return;
 
-            // V2.0.34：安全访问（nil 检查防止 crash）
-            UIWindow *w = nil;
-            for (UIWindow *win in app.windows) {
-                if (win.windowScene) {
-                    w = [[UIWindow alloc] initWithWindowScene:win.windowScene];
-                    break;
-                }
+        UIWindow *w = nil;
+        for (UIWindow *win in app.windows) {
+            if (win.windowScene) {
+                w = [[UIWindow alloc] initWithWindowScene:win.windowScene];
+                break;
             }
-            if (!w) {
-                w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            }
-
-            w.backgroundColor = [UIColor clearColor];
-            w.windowLevel = UIWindowLevelNormal + 1.0;
-            w.userInteractionEnabled = YES;
-
-            UIViewController *vc = [[UIViewController alloc] init];
-            PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:w.bounds];
-            cv.backgroundColor = [UIColor clearColor];
-            cv.opaque = NO;
-            cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            vc.view = cv;
-            w.rootViewController = vc;
-            w.hidden = NO;
-
-            _window = w;
-            _content = cv;
-
-            // 顶部触发条
-            UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
-            strip.backgroundColor = [UIColor clearColor];
-            strip.translatesAutoresizingMaskIntoConstraints = NO;
-            [cv addSubview:strip];
-            [NSLayoutConstraint activateConstraints:@[
-                [strip.leadingAnchor constraintEqualToAnchor:cv.leadingAnchor],
-                [strip.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
-                [strip.topAnchor constraintEqualToAnchor:cv.topAnchor],
-                [strip.heightAnchor constraintEqualToConstant:110.0]
-            ]];
-            cv.pgHitView = strip;
-            _strip = strip;
-
-            // 信息胶囊
-            UIView *info = [[UIView alloc] initWithFrame:CGRectZero];
-            info.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
-            info.layer.cornerRadius = 14.0;
-            info.layer.masksToBounds = YES;
-            info.alpha = 0.0;
-            info.userInteractionEnabled = NO;
-            info.translatesAutoresizingMaskIntoConstraints = NO;
-            [strip addSubview:info];
-            [NSLayoutConstraint activateConstraints:@[
-                [info.centerXAnchor constraintEqualToAnchor:strip.centerXAnchor],
-                [info.topAnchor constraintEqualToAnchor:strip.topAnchor constant:10.0],
-                [info.heightAnchor constraintEqualToConstant:30.0],
-                [info.widthAnchor constraintGreaterThanOrEqualToConstant:120.0]
-            ]];
-            _infoView = info;
-
-            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectZero];
-            lb.textColor = [UIColor whiteColor];
-            lb.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
-            lb.textAlignment = NSTextAlignmentCenter;
-            lb.userInteractionEnabled = NO;
-            lb.translatesAutoresizingMaskIntoConstraints = NO;
-            [info addSubview:lb];
-            [NSLayoutConstraint activateConstraints:@[
-                [lb.leadingAnchor constraintEqualToAnchor:info.leadingAnchor constant:12.0],
-                [lb.trailingAnchor constraintEqualToAnchor:info.trailingAnchor constant:-12.0],
-                [lb.topAnchor constraintEqualToAnchor:info.topAnchor],
-                [lb.bottomAnchor constraintEqualToAnchor:info.bottomAnchor]
-            ]];
-            _label = lb;
-
-            // 手势
-            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
-            pan.cancelsTouchesInView = NO;
-            [strip addGestureRecognizer:pan];
-
-            UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handleLongPress:)];
-            lp.minimumPressDuration = 0.3;
-            lp.cancelsTouchesInView = NO;
-            [strip addGestureRecognizer:lp];
-
-            PGLog("install: window created");
-        } @catch (NSException *e) {
-            PGLog([NSString stringWithFormat:@"install error: %@", e.reason].UTF8String);
-            _window = nil;
         }
-    });
+        if (!w) {
+            w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        }
+
+        w.backgroundColor = [UIColor clearColor];
+        w.windowLevel = UIWindowLevelNormal + 1.0;
+        w.userInteractionEnabled = YES;
+
+        UIViewController *vc = [[UIViewController alloc] init];
+        PGPassthroughView *cv = [[PGPassthroughView alloc] initWithFrame:w.bounds];
+        cv.backgroundColor = [UIColor clearColor];
+        cv.opaque = NO;
+        cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        vc.view = cv;
+        w.rootViewController = vc;
+        w.hidden = NO;
+
+        _window = w;
+        _content = cv;
+
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
+        strip.backgroundColor = [UIColor clearColor];
+        strip.translatesAutoresizingMaskIntoConstraints = NO;
+        [cv addSubview:strip];
+        [NSLayoutConstraint activateConstraints:@[
+            [strip.leadingAnchor constraintEqualToAnchor:cv.leadingAnchor],
+            [strip.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
+            [strip.topAnchor constraintEqualToAnchor:cv.topAnchor],
+            [strip.heightAnchor constraintEqualToConstant:110.0]
+        ]];
+        cv.pgHitView = strip;
+        _strip = strip;
+
+        UIView *info = [[UIView alloc] initWithFrame:CGRectZero];
+        info.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
+        info.layer.cornerRadius = 14.0;
+        info.layer.masksToBounds = YES;
+        info.alpha = 0.0;
+        info.userInteractionEnabled = NO;
+        info.translatesAutoresizingMaskIntoConstraints = NO;
+        [strip addSubview:info];
+        [NSLayoutConstraint activateConstraints:@[
+            [info.centerXAnchor constraintEqualToAnchor:strip.centerXAnchor],
+            [info.topAnchor constraintEqualToAnchor:strip.topAnchor constant:10.0],
+            [info.heightAnchor constraintEqualToConstant:30.0],
+            [info.widthAnchor constraintGreaterThanOrEqualToConstant:120.0]
+        ]];
+        _infoView = info;
+
+        UILabel *lb = [[UILabel alloc] initWithFrame:CGRectZero];
+        lb.textColor = [UIColor whiteColor];
+        lb.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+        lb.textAlignment = NSTextAlignmentCenter;
+        lb.userInteractionEnabled = NO;
+        lb.translatesAutoresizingMaskIntoConstraints = NO;
+        [info addSubview:lb];
+        [NSLayoutConstraint activateConstraints:@[
+            [lb.leadingAnchor constraintEqualToAnchor:info.leadingAnchor constant:12.0],
+            [lb.trailingAnchor constraintEqualToAnchor:info.trailingAnchor constant:-12.0],
+            [lb.topAnchor constraintEqualToAnchor:info.topAnchor],
+            [lb.bottomAnchor constraintEqualToAnchor:info.bottomAnchor]
+        ]];
+        _label = lb;
+
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handlePan:)];
+        pan.cancelsTouchesInView = NO;
+        [strip addGestureRecognizer:pan];
+
+        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(pg_handleLongPress:)];
+        lp.minimumPressDuration = 0.3;
+        lp.cancelsTouchesInView = NO;
+        [strip addGestureRecognizer:lp];
+
+        PGWriteLog("install: window created OK");
+    } @catch (NSException *e) {
+        // 无法使用 NSString，直接写固定消息
+        PGWriteLog("install error occurred");
+        _window = nil;
+    }
 }
 
 - (void)pg_reload {
-    if (!PGEnabled() || !PGCurrentAppSelected()) {
-        _window = nil;
-    } else {
-        [self pg_install];
-    }
+    [self pg_install];
 }
 
 - (void)pg_handlePan:(UIPanGestureRecognizer *)g {
@@ -235,10 +198,8 @@ static void PGInitLogPath(void) {
 }
 
 - (void)pg_show {
-    if (!PGEnabled()) return;
-    if (!PGCurrentAppSelected()) return;
+    if (!_label) return;
     @try {
-        if (!_label) return;
         NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
         [fmt setDateFormat:@"HH:mm"];
         NSString *time = [fmt stringFromDate:[NSDate date]];
@@ -248,166 +209,118 @@ static void PGInitLogPath(void) {
         NSString *bolt = @"";
         if (st == UIDeviceBatteryStateCharging || st == UIDeviceBatteryStateFull) bolt = @"⚡";
         _label.text = [NSString stringWithFormat:@"%@   %@%d%%", time, bolt, pct];
-
         _infoView.alpha = 1.0;
         _infoView.transform = CGAffineTransformIdentity;
-
-        if (!PGKeepOn()) {
-            _token += 1;
-            NSInteger my = _token;
-            NSTimeInterval d = PGDuration();
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                if (my == _token) [self pg_hide];
-            });
-        }
+        _token += 1;
+        NSInteger my = _token;
+        NSTimeInterval d = 2.0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (my == _token) _infoView.alpha = 0.0;
+        });
     } @catch (NSException *e) {}
-}
-
-- (void)pg_hide {
-    if (!_infoView) return;
-    _infoView.alpha = 0.0;
-    _infoView.transform = CGAffineTransformIdentity;
 }
 @end
 
-#pragma mark - 入口（V2.0.36 极简版：构造函数只做 C 操作）
-
-// V2.0.36：移除 PGDiagStatus() —— 它在构造函数期调用了 [UIApplication sharedApplication]，
-// 这是原神等游戏闪退的根因。所有诊断信息改为在 pg_install 时打印。
+#pragma mark - 入口（V2.0.38 极简版：构造函数零 ObjC）
 
 __attribute__((constructor))
 static void PGInit(void) {
-    @autoreleasepool {
-        const char *exe = getprogname();
-        if (!exe) { PGLog("FATAL: getprogname returned NULL"); return; }
+    // ===== 第一步：获取 exe 路径（C 函数，绝对安全）=====
+    const char *exe = getprogname();
+    if (!exe) return;
 
-        // ===== C 层路径过滤（只读 C 字符串，不调用 ObjC）=====
-        PGLog([NSString stringWithFormat:@"constructor start: exe=%s", exe].UTF8String);
+    // 复制到静态缓冲区，避免指针悬空
+    strncpy(sExePath, exe, sizeof(sExePath) - 1);
+    sExePath[sizeof(sExePath) - 1] = '\0';
 
-        if (strncmp(exe, "/System", 7) == 0) { PGLog("skipped: /System path"); return; }
-        if (strncmp(exe, "/usr", 4) == 0) { PGLog("skipped: /usr path"); return; }
-        if (strncmp(exe, "/bin", 4) == 0) { PGLog("skipped: /bin path"); return; }
-        if (strncmp(exe, "/sbin", 5) == 0) { PGLog("skipped: /sbin path"); return; }
-        if (strncmp(exe, "/Library", 8) == 0) { PGLog("skipped: /Library path"); return; }
-        if (strstr(exe, "SpringBoard")) { PGLog("skipped: SpringBoard"); return; }
-        if (strstr(exe, "/var/lib")) { PGLog("skipped: /var/lib path"); return; }
-        if (!strstr(exe, ".app/")) { PGLog("skipped: no .app/ in path"); return; }
+    // 写日志（纯 C write，不依赖任何 ObjC）
+    PGWriteLog("constructor: exe path copied");
 
-        PGLog("path_filter: PASS");
+    // ===== 第二步：路径过滤（纯 C 字符串比较）=====
+    if (strncmp(sExePath, "/System", 7) == 0) {
+        PGWriteLog("constructor: system path, skip");
+        return;
+    }
+    if (strncmp(sExePath, "/usr", 4) == 0) {
+        PGWriteLog("constructor: usr path, skip");
+        return;
+    }
+    if (strncmp(sExePath, "/bin", 4) == 0) {
+        PGWriteLog("constructor: bin path, skip");
+        return;
+    }
+    if (strncmp(sExePath, "/sbin", 5) == 0) {
+        PGWriteLog("constructor: sbin path, skip");
+        return;
+    }
+    if (strncmp(sExePath, "/Library", 8) == 0) {
+        PGWriteLog("constructor: library path, skip");
+        return;
+    }
+    if (strstr(sExePath, "SpringBoard")) {
+        PGWriteLog("constructor: SpringBoard, skip");
+        return;
+    }
+    if (strstr(sExePath, "/var/lib")) {
+        PGWriteLog("constructor: var/lib path, skip");
+        return;
+    }
+    if (!strstr(sExePath, ".app/")) {
+        PGWriteLog("constructor: not .app/, skip");
+        return;
+    }
 
-        // ===== 延迟初始化日志（用纯 C open/write，不崩）=====
-        PGInitLogPath();
+    PGWriteLog("constructor: exe passed path filter");
 
-        // ===== 获取 bundleID（只读 C 字符串路径，不调 ObjC）=====
-        // 用 _dyld_get_image_name(0) 取可执行文件路径，手动解析 .app 前缀
-        NSString *bid = nil;
-        const char *m = _dyld_get_image_name(0);
-        if (m && m[0]) {
-            NSString *path = [NSString stringWithUTF8String:m];
-            PGLog([NSString stringWithFormat:@"dyld image: %s", m].UTF8String);
-            // 形如: /var/containers/Bundle/Application/.jbroot-XXXX/Apps/Genshin.app/Genshin
-            // 找最后一个 .app/ 前缀
-            NSRange r = [path rangeOfString:@".app/"];
-            if (r.location != NSNotFound) {
-                NSString *appDir = [path substringToIndex:r.location + 5]; // ".app/"
-                // 向上取一级取 bundle name
-                NSString *bundleName = [[appDir stringByDeletingLastPathComponent] lastPathComponent];
-                PGLog([NSString stringWithFormat:@"appDir: %@, bundleName: %@", appDir, bundleName].UTF8String);
-                // 常见格式: GenshinImpact.app → 尝试从 Info.plist 读 CFBundleIdentifier
-                NSString *plistPath = [appDir stringByAppendingPathComponent:@"Info.plist"];
-                NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
-                if (info) bid = info[@"CFBundleIdentifier"];
-                if (!bid.length) bid = [bundleName stringByReplacingOccurrencesOfString:@".app" withString:@""];
-                PGLog([NSString stringWithFormat:@"resolved bid: %@", bid].UTF8String);
-            } else {
-                PGLog("WARNING: no .app/ found in path");
-            }
-        } else {
-            PGLog("WARNING: _dyld_get_image_name(0) returned NULL");
-        }
-        if (!bid) bid = @"?";
+    // ===== 第三步：延迟所有 ObjC 操作 3 秒 =====
+    // 此时不调用任何 ObjC，只调度一个 block
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        PGWriteLog("delay: 3s fallback start");
 
-        PGLog([NSString stringWithFormat:@"constructor: exe=%s bid=%@ path_filter=pass", exe, bid].UTF8String);
-
-        // ===== 越狱管理类 App：window 结构特殊，注入易崩，直接跳过 =====
-        if ([bid isEqualToString:@"com.coolstar.SileoStore"] ||
-            [bid isEqualToString:@"com.rile.ios.Sileo"] ||
-            [bid isEqualToString:@"com.tigisoftware.Filza"] ||
-            [bid isEqualToString:@"com.saurik.Cydia"] ||
-            [bid isEqualToString:@"com.zebra.renati"] ||
-            [bid hasPrefix:@"com.opa334."]) {
-            PGLog("constructor: jailbreak manager skipped");
-            return;
-        }
-
-        // ===== 系统 App 跳过（C 字符串比较）=====
-        if ([bid hasPrefix:@"com.apple."]) {
-            PGLog("constructor: system app skipped");
-            return;
-        }
-
-        PGLog("passed all filters, registering observers...");
-
-        // ===== 注册 notify token（纯 C 系统调用，不崩）=====
-        int ret = notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
-            PGLog("notify: reload triggered");
+        // 注册 notify token
+        int ret = notify_register_dispatch("com.sykes.perfectgrabberng.reload", &sNotifyToken,
+                                           dispatch_get_main_queue(), ^(int t) {
             [[PGOverlay shared] pg_reload];
         });
         if (ret != 0) {
-            PGLog([NSString stringWithFormat:@"notify_register failed: %d", ret].UTF8String);
+            char msg[64];
+            snprintf(msg, sizeof(msg), "notify_register failed: %d", ret);
+            PGWriteLog(msg);
         } else {
-            PGLog([NSString stringWithFormat:@"notify_register success: token=%d", sNotifyToken].UTF8String);
+            PGWriteLog("notify_register success");
         }
-
-        // ===== 注册通知 observer（必须在构造期完成，否则 didFinishLaunching 先触发时漏掉）=====
         sObserverRegistered = YES;
 
+        // 注册通知 observers
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
-            PGLog("notify: UIApplicationDidFinishLaunchingNotification");
-            @try {
-                [[PGOverlay shared] pg_install];
-            } @catch (NSException *e) {
-                PGLog([NSString stringWithFormat:@"didFinishLaunching ERROR: %@", e.reason].UTF8String);
-            }
+            PGWriteLog("notify: didFinishLaunching");
+            [[PGOverlay shared] pg_install];
         }];
-        PGLog("registered didFinishLaunching observer");
+        PGWriteLog("registered didFinishLaunching observer");
 
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
-            PGLog("notify: UIApplicationDidBecomeActiveNotification");
-            @try {
-                [[PGOverlay shared] pg_install];
-            } @catch (NSException *e) {
-                PGLog([NSString stringWithFormat:@"didBecomeActive ERROR: %@", e.reason].UTF8String);
-            }
+            PGWriteLog("notify: didBecomeActive");
+            [[PGOverlay shared] pg_install];
         }];
-        PGLog("registered didBecomeActive observer");
+        PGWriteLog("registered didBecomeActive observer");
 
-        // ===== 兜底：dylib 在 App 已激活后才注入的情况 =====
-        // V2.0.36：用 dispatch_after 延迟执行，此时 UIKit 已就绪
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (!sObserverRegistered) { PGLog("delay: skipped (observer unregistered)"); return; }
-            // 此时 UIKit 已就绪，可以安全调用 sharedApplication
-            UIApplication *app = [UIApplication sharedApplication];
-            if (app && app.applicationState == UIApplicationStateActive) {
-                PGLog("delay: 3s fallback install (app active)");
-                @try {
-                    [[PGOverlay shared] pg_install];
-                } @catch (NSException *e) {
-                    PGLog([NSString stringWithFormat:@"3s fallback ERROR: %@", e.reason].UTF8String);
-                }
-            } else {
-                PGLog("delay: 3s fallback skipped (app not active)");
-            }
-        });
+        // 如果 App 已经激活，直接安装
+        UIApplication *app = [UIApplication sharedApplication];
+        if (app && app.applicationState == UIApplicationStateActive) {
+            PGWriteLog("delay: app active, install immediately");
+            [[PGOverlay shared] pg_install];
+        } else {
+            PGWriteLog("delay: app not active yet, waiting for notifications");
+        }
 
-        PGLog("constructor complete: all observers registered");
-    }
+        PGWriteLog("constructor: all setup complete");
+    });
 }
