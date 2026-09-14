@@ -112,12 +112,15 @@ static void PGInitLogPath(void) {
         UIApplication *app = [UIApplication sharedApplication];
         if (!app) return;
 
-        // 找合适的 window scene
+        // 找合适的 window scene（安全访问：先判 windows 非空且 firstObject.windowScene 存在）
         UIWindow *targetScene = nil;
         if (@available(iOS 13.0, *)) {
-            for (UIWindowScene *scene in app.windows.firstObject.windowScene.connection.availableScenes) {
-                targetScene = [[UIWindow alloc] initWithWindowScene:scene];
-                break;
+            UIWindow *firstWin = app.windows.firstObject;
+            if (firstWin && firstWin.windowScene) {
+                for (UIWindowScene *scene in firstWin.windowScene.connection.availableScenes) {
+                    targetScene = [[UIWindow alloc] initWithWindowScene:scene];
+                    break;
+                }
             }
         }
         if (!targetScene) {
@@ -137,7 +140,7 @@ static void PGInitLogPath(void) {
         vc.view = cv;
         targetScene.rootViewController = vc;
 
-        _window = targetScene;
+        _window = targetScene;  // 保存的是 UIWindow，不是 UIWindowScene
         _content = cv;
 
         // 下拉条
