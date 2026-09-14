@@ -129,5 +129,5 @@ echo "  postinst/postrm: 已添加（对齐 Choicy 范式）"
 # 组装：面板 + dylib 都放进 pkg/（根相对 ./...），打 xz deb
 cp -a "$STAGE/." pkg/
 dpkg-deb -b -Zxz pkg "$OUT"
-echo "  -> $(wc -c < "$OUT") bytes"
+echo "  -> $(cat "$OUT" | wc -c) bytes"
 echo "BUILD_OK $OUT"
