@@ -106,7 +106,6 @@ static void PGWriteLog(const char *msg) {
     // 全部失败，至少errno已经在NSLog里了
     (void)savedErrno;
 }
-}
 
 #pragma mark - 穿透视图
 
