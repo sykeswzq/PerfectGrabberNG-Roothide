@@ -1,11 +1,1 @@
-#!/bin/sh
-# Post-install: ① 重启 runningboardd 使新 filter 生效（对齐 Choicy/锤子助手范式）；
-#               ② 把 filter.plist 改成 mobile 可写，让设置面板(mobile)能直接写回勾选的 App。
-# roothide 下 postinst 运行时根 = jbroot（官方特性），相对路径即真实位置，无需 /var/jb 软链。
-F=Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist
-if [ -f "$F" ]; then
-    chown mobile:mobile "$F" 2>/dev/null
-    chmod 666 "$F" 2>/dev/null
-fi
-killall runningboardd 2>/dev/null
-exit 0
+IyEvYmluL3NoCiMgUG9zdC1pbnN0YWxsOiDikaAg6YeN5ZCvIHJ1bm5pbmdib2FyZGQg5L2/5pawIGZpbHRlciDnlJ/mlYjvvIjlr7npvZAgQ2hvaWN5L+mUpOWtkOWKqeaJi+iMg+W8j++8ie+8mwojICAgICAgICAgICAgICAg4pGhIOaKiiBmaWx0ZXIucGxpc3Qg5pS55oiQIG1vYmlsZSDlj6/lhpnvvIzorqnorr7nva7pnaLmnb8obW9iaWxlKeiDveebtOaOpeWGmeWbnuWLvumAieeahCBBcHDjgIIKIyByb290aGlkZSDkuIsgcG9zdGluc3Qg6L+Q6KGM5pe25qC5ID0gamJyb29077yI5a6Y5pa554m55oCn77yJ77yM55u45a+56Lev5b6E5Y2z55yf5a6e5L2N572u77yM5peg6ZyAIC92YXIvamIg6L2v6ZO+44CCCkY9TGlicmFyeS9Nb2JpbGVTdWJzdHJhdGUvRHluYW1pY0xpYnJhcmllcy9QZXJmZWN0R3JhYmJlck5HLnBsaXN0CmlmIFsgLWYgIiRGIiBdOyB0aGVuCiAgICBjaG93biBtb2JpbGU6bW9iaWxlICIkRiIgMj4vZGV2L251bGwKICAgIGNobW9kIDY2NiAiJEYiIDI+L2Rldi9udWxsCmZpCmtpbGxhbGwgcnVubmluZ2JvYXJkZCAyPi9kZXYvbnVsbApleGl0IDAK
