@@ -18,26 +18,74 @@ static volatile BOOL sObserverRegistered = NO;
 
 #pragma mark - 纯 C 日志（不依赖 NSString）
 
-static void PGWriteLog(const char *msg) {
-    // 多路径 fallback，确保能找到可写位置
-    const char *paths[] = {
-        "/var/mobile/pgng_diag.log",
-        "/tmp/pgng_diag.log",
-        "/var/mobile/Documents/pgng_diag.log"
-    };
-    int fd = -1;
-    for (int i = 0; i < 3; i++) {
-        fd = open(paths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd >= 0) break;
+// 获取 jbroot 路径（roothide 下真实根目录）
+static const char* PGGetJbroot() {
+    static char jbroot[512] = {0};
+    if (jbroot[0] != '\0') return jbroot;
+    
+    // 方法1: 从自身 image path 反推
+    for (int i = 0; i < _dyld_image_count(); i++) {
+        const char *img = _dyld_get_image_name(i);
+        if (img) {
+            // 查找 /Library/PreferenceBundles 或 /Library/MobileSubstrate/DynamicLibraries
+            const char *pb = strstr(img, "/Library/PreferenceBundles/");
+            const char *dl = strstr(img, "/Library/MobileSubstrate/DynamicLibraries/");
+            const char *target = pb ? (dl && dl < pb ? dl : pb) : dl;
+            if (target) {
+                size_t len = target - img;
+                if (len < sizeof(jbroot) - 1) {
+                    strncpy(jbroot, img, len);
+                    jbroot[len] = '\0';
+                    return jbroot;
+                }
+            }
+        }
     }
+    
+    // 方法2: 尝试常见路径
+    const char *candidates[] = {
+        "/var/jb",
+        "/var/containers/Bundle/Application/.jbroot",
+        NULL
+    };
+    for (int i = 0; candidates[i]; i++) {
+        struct stat st;
+        if (stat(candidates[i], &st) == 0 && S_ISDIR(st.st_mode)) {
+            strncpy(jbroot, candidates[i], sizeof(jbroot) - 1);
+            return jbroot;
+        }
+    }
+    
+    return NULL;
+}
+
+static void PGWriteLog(const char *msg) {
+    // 1. 先尝试写入 jbroot 下的日志文件
+    const char *jb = PGGetJbroot();
+    if (jb) {
+        char path[768];
+        snprintf(path, sizeof(path), "%s/var/mobile/pgng_diag.log", jb);
+        int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            write(fd, msg, strlen(msg));
+            write(fd, "\n", 1);
+            close(fd);
+            return;
+        }
+    }
+    
+    // 2. 尝试 /tmp
+    int fd = open("/tmp/pgng_diag.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
         write(fd, msg, strlen(msg));
         write(fd, "\n", 1);
         close(fd);
-    } else {
-        // 连路径都失败，至少打印到系统日志
-        fprintf(stderr, "[PGNG] %s\n", msg);
+        return;
     }
+    
+    // 3. 兜底：NSLog（会输出到 Xcode Console / system log）
+    NSLog(@"[PGNG] %s", msg);
+    fprintf(stderr, "[PGNG] %s\n", msg);
 }
 
 #pragma mark - 穿透视图
