@@ -3,6 +3,7 @@ name: Build PerfectGrabberNG roothide deb
 on:
   push:
     branches: [main]
+    # 忽略 "Commit deb back" 步骤推回 main 的 .deb 提交，避免自触发循环白烧 run
     paths-ignore:
       - "*.deb"
   workflow_dispatch:
@@ -22,7 +23,7 @@ jobs:
       - name: Install build tools
         run: |
           command -v dpkg-deb >/dev/null 2>&1 || brew install dpkg
-          # ldid 三级兜底：brew 经常抽风（formulae 改名 / 仓库超时），
+          # ldid 三级兜底：brew 经常抽风（ formulae 改名 / 仓库超时），
           # 最后直接从 ProcursusTeam/ldid 的 release 拉预编译二进制，不依赖 brew。
           if command -v ldid >/dev/null 2>&1; then
             echo "ldid: 镜像已自带"
@@ -63,29 +64,41 @@ jobs:
           dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.dylib' || { echo "ERROR: 缺 dylib"; exit 1; }
           dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.dylib\.roothidepatch$' || { echo "ERROR: 缺 .roothidepatch 标记"; exit 1; }
           dpkg-deb -c "$DEB" | grep -E '\./Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG\.plist' || { echo "ERROR: 缺 filter plist"; exit 1; }
-          dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceBundles/PerfectGrabberNG\.bundle/PerfectGrabberNG' || { echo "ERROR: 缺设置面板 bundle"; exit 1; }
+          # setuid root helper：面板靠它把白名单写进 root 权限的 filter plist
+          dpkg-deb -c "$DEB" | grep -E '\./usr/bin/pgngfilter$' || { echo "ERROR: 缺 setuid helper"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E '\./usr/bin/pgngfilter$' | grep -q -- '-rwsr-xr-x' || { echo "ERROR: helper 未保留 setuid 位"; exit 1; }
+          # 面板 bundle 三件套（借 AltList 读 App 数据 + 自写控制器）
+          dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceBundles/PerfectGrabberNG\.bundle/PerfectGrabberNG$' || { echo "ERROR: 缺面板可执行"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceBundles/PerfectGrabberNG\.bundle/Info\.plist' || { echo "ERROR: 缺面板 Info.plist"; exit 1; }
           dpkg-deb -c "$DEB" | grep -E '\./Library/PreferenceLoader/Preferences/PerfectGrabberNG\.plist' || { echo "ERROR: 缺 PreferenceLoader 入口"; exit 1; }
-          echo "  (1) OK 路径与文件齐全"
-          # (2) 解包校验签名与 filter
+          echo "  (1) OK 路径与文件齐全（dylib + marker + 面板 bundle）"
+          # (2) control 必须带 Choicy 范式依赖，且无维护脚本
+          rm -rf /tmp/pgctrl && dpkg-deb -e "$DEB" /tmp/pgctrl
+          CTRL="$(cat /tmp/pgctrl/control)"
+          echo "---- control ----"; echo "$CTRL"; echo "-----------------"
+          echo "$CTRL" | grep -q "Pre-Depends: rootless-compat" || { echo "ERROR: control 缺 Pre-Depends rootless-compat"; exit 1; }
+          echo "$CTRL" | grep -q "Depends:.*com.opa334.altlist" || { echo "ERROR: control 缺 Depends com.opa334.altlist"; exit 1; }
+          echo "$CTRL" | grep -q "Depends:.*preferenceloader" || { echo "ERROR: control 缺 Depends preferenceloader"; exit 1; }
+          echo "$CTRL" | grep -q "Depends:.*mobilesubstrate" || { echo "ERROR: control 缺 Depends mobilesubstrate"; exit 1; }
+          if [ -d pkg/DEBIAN ]; then
+            # 注：postinst/postrm 已允许（对齐 Choicy/锤子助手范式，重启 runningboardd）
+            for s in preinst prerm; do
+              [ -f "pkg/DEBIAN/$s" ] && { echo "ERROR: 出现维护脚本 $s"; exit 1; }
+            done
+          fi
+          echo "  (2) OK control 范式正确（rootless-compat + altlist + preferenceloader + mobilesubstrate，带 postinst/postrm）"
+          # (3) 解包校验签名与 filter
           rm -rf /tmp/pgcheck && mkdir -p /tmp/pgcheck
           dpkg-deb -x "$DEB" /tmp/pgcheck
           DYLIB=/tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
           m=$(xxd -p -l4 "$DYLIB" | tr -d '\n')
           [ "$m" = "cafebabe" ] || { echo "ERROR: dylib magic=$m"; exit 1; }
-          # install name 必须是 @loader_path/.jbroot（roothide 规范）
-          IDS="$(otool -D "$DYLIB" | grep -v 'architecture' | grep -v '^$' | sort -u)"
-          echo "  install name: $IDS"
-          echo "$IDS" | grep -q "@loader_path/.jbroot" \
-            || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范: $IDS"; exit 1; }
-          ldid -e "$DYLIB" >/dev/null 2>&1 || { echo "WARN: ldid -e 无输出（ad-hoc 签名可能为空，非致命）"; }
-          # V2.0.20：filter 必须是 Bundles 精准白名单（不是 Classes 全局注入）。
-          # Classes=[UIApplication] 会注入所有加载 UIKit 的进程 → 命中不该进的进程 → 安全模式（2.0.19 踩坑）。
-          # Bundles 初始为占位符 com.sykes.pgng.disabled（零注入、不崩），运行时由设置面板改写真 bid。
-          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist >/dev/null 2>&1 || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入 → 安全模式）"; exit 1; }
-          B0="$(/usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist 2>/dev/null)"
-          echo "  (2) OK dylib 头正常 + install name 规范 + filter=Bundles 精准白名单(Bundles[0]=$B0)"
-
-          # V2.0.20 起不再需要 setuid helper：filter 由设置面板(mobile) 直写（postinst chown mobile + chmod 666）。
+          # ★ 第一层保险：filter 必须是 Bundles 白名单（精准注入），绝不能退化成 Classes 全局注入
+          /usr/libexec/PlistBuddy -c "Print :Filter:Bundles:0" /tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.plist | grep -q "com.sykes.pgng.disabled" || { echo "ERROR: filter 不是 Bundles 白名单（会退化为全局注入）"; exit 1; }
+          # ★ 第二层保险：dylib 不得强链接 UIKit（Choicy 式轻量）+ install name 必须是 roothide 规范
+          if otool -L "$DYLIB" | grep -q "UIKit.framework"; then echo "ERROR: dylib 仍在强链接 UIKit"; exit 1; fi
+          otool -D "$DYLIB" | grep -q "@loader_path/.jbroot" || { echo "ERROR: LC_ID_DYLIB 不是 roothide 规范"; exit 1; }
+          echo "  (3) OK 头正常 + filter=Bundles 精准注入 + 无 UIKit 强链接 + install name 规范"
           echo "全部校验通过"
 
       - name: Upload artifact
@@ -94,3 +107,12 @@ jobs:
           name: perfectgrabberng-deb
           path: "*.deb"
           retention-days: 30
+
+      - name: Commit deb back
+        run: |
+          git config user.email "sykeswzq@users.noreply.github.com"
+          git config user.name "sykeswzq"
+          git add "*.deb" || true
+          git commit -m "chore: build ${GITHUB_RUN_NUMBER} [skip ci]" || echo "no changes"
+          git pull --rebase origin main || true
+          git push origin main || true
