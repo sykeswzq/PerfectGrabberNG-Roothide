@@ -70,7 +70,7 @@ jobs:
           rm -rf /tmp/pgcheck && mkdir -p /tmp/pgcheck
           dpkg-deb -x "$DEB" /tmp/pgcheck
           DYLIB=/tmp/pgcheck/Library/MobileSubstrate/DynamicLibraries/PerfectGrabberNG.dylib
-          m=$(xxd -p -l4 "$DYLIB" | tr -d '\n')
+          m=$(python3 -c 'import sys;d=open(sys.argv[1],"rb").read(4);print(d.hex())' "$DYLIB")
           [ "$m" = "cafebabe" ] || { echo "ERROR: dylib magic=$m"; exit 1; }
           # install name 必须是 @loader_path/.jbroot（roothide 规范）
           IDS="$(otool -D "$DYLIB" | grep -v 'architecture' | grep -v '^$' | sort -u)"
