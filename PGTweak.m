@@ -19,7 +19,8 @@ static volatile BOOL sObserverRegistered = NO;
 #pragma mark - 纯 C 日志（不依赖 NSString）
 
 static void PGWriteLog(const char *msg) {
-    const char *logPath = "/var/mobile/pgng_diag.log";
+    // 用 /tmp 确保可写权限
+    const char *logPath = "/tmp/pgng_diag.log";
     int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
         write(fd, msg, strlen(msg));
@@ -273,11 +274,11 @@ static void PGInit(void) {
 
     PGWriteLog("constructor: exe passed path filter");
 
-    // ===== 第三步：延迟所有 ObjC 操作 3 秒 =====
-    // 此时不调用任何 ObjC，只调度一个 block
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+    // ===== 第三步：延迟所有 ObjC 操作 1 秒（给 UIKit 足够初始化时间）=====
+    // 更短的延迟确保在 App 启动早期就能注册 observer
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        PGWriteLog("delay: 3s fallback start");
+        PGWriteLog("delay: 1s start");
 
         // 注册 notify token
         int ret = notify_register_dispatch("com.sykes.perfectgrabberng.reload", &sNotifyToken,
