@@ -61,7 +61,13 @@ static const char* PGGetJbroot() {
 }
 
 static void PGWriteLog(const char *msg) {
-    // 1. 先尝试写入 jbroot 下的日志文件
+    // 第一步：强制NSLog（无论什么情况都会输出到系统日志）
+    NSLog(@"[PGNG] %s", msg);
+    
+    // 第二步：尝试写入文件（只是辅助，不影响主流程）
+    int savedErrno = errno;
+    
+    // 尝试jbroot路径
     const char *jb = PGGetJbroot();
     if (jb) {
         char path[768];
@@ -75,7 +81,7 @@ static void PGWriteLog(const char *msg) {
         }
     }
     
-    // 2. 尝试 /tmp
+    // 尝试/tmp
     int fd = open("/tmp/pgng_diag.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
         write(fd, msg, strlen(msg));
@@ -84,9 +90,22 @@ static void PGWriteLog(const char *msg) {
         return;
     }
     
-    // 3. 兜底：NSLog（会输出到 Xcode Console / system log）
-    NSLog(@"[PGNG] %s", msg);
-    fprintf(stderr, "[PGNG] %s\n", msg);
+    // 尝试Documents
+    const char *home = getenv("HOME");
+    if (!home) home = "/var/mobile";
+    char path[768];
+    snprintf(path, sizeof(path), "%s/pgng_diag.log", home);
+    fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        write(fd, msg, strlen(msg));
+        write(fd, "\n", 1);
+        close(fd);
+        return;
+    }
+    
+    // 全部失败，至少errno已经在NSLog里了
+    (void)savedErrno;
+}
 }
 
 #pragma mark - 穿透视图
