@@ -19,7 +19,8 @@ static volatile BOOL sObserverRegistered = NO;
 #pragma mark - 纯 C 日志（不依赖 NSString）
 
 static void PGWriteLog(const char *msg) {
-    const char *logPath = "/var/mobile/pgng_diag.log";
+    // 用 /tmp 确保可写权限
+    const char *logPath = "/tmp/pgng_diag.log";
     int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
         write(fd, msg, strlen(msg));
