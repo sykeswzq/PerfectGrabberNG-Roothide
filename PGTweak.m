@@ -9,6 +9,7 @@
 #import <string.h>
 #import <unistd.h>
 #import <mach-o/dyld.h>
+#import <sys/stat.h>
 
 #pragma mark - 全局状态
 
