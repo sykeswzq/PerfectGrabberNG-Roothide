@@ -20,40 +20,37 @@
 
 static NSString *sLogPath = nil;
 static int sNotifyToken = 0;
+static volatile BOOL sObserverRegistered = NO;
 
 #pragma mark - 诊断日志
 
+// V2.0.36：纯 C 日志（write syscall），避免构造函数期调用 ObjC 方法
 static void PGLog(const char *msg) {
     if (!sLogPath) return;
-    @try {
-        NSString *line = [NSString stringWithFormat:@"%s | %@\n", msg, [NSDate date]];
-        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:sLogPath];
-        if (h) {
-            [h seekToEndOfFile];
-            [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [h closeFile];
-        }
-    } @catch (NSException *e) {}
+    int fd = open([sLogPath fileSystemRepresentation], O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (fd >= 0) {
+        const char *newline = "\n";
+        write(fd, msg, strlen(msg));
+        write(fd, newline, 1);
+        close(fd);
+    }
 }
 
 static void PGInitLogPath(void) {
+    // V2.0.36：用纯 C open，不调 NSFileManager（构造函数期不安全）
     if (sLogPath) return;
-    @try {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        NSMutableArray *cands = [NSMutableArray array];
-        if (doc.length) [cands addObject:[doc stringByAppendingPathComponent:@"pgng_diag.log"]];
-        [cands addObject:@"/var/mobile/pgng_diag.log"];
-        [cands addObject:[PGJbRoot() stringByAppendingPathComponent:@"var/mobile/pgng_diag.log"]];
-        for (NSString *p in cands) {
-            if ([fm fileExistsAtPath:p] ||
-                [@"" writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:NULL]) {
-                sLogPath = p;
-                PGLog([NSString stringWithFormat:@"log_path=%@", p].UTF8String);
-                break;
-            }
+    const char *cands[] = {
+        "/var/mobile/pgng_diag.log",
+        "/tmp/pgng_diag.log"
+    };
+    for (int i = 0; i < 2; i++) {
+        int fd = open(cands[i], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            close(fd);
+            sLogPath = [NSString stringWithUTF8String:cands[i]];
+            return;
         }
-    } @catch (NSException *e) {}
+    }
 }
 
 #pragma mark - 穿透视图
@@ -274,22 +271,10 @@ static void PGInitLogPath(void) {
 }
 @end
 
-#pragma mark - 入口（回归 v2.0.12 稳定模式）
+#pragma mark - 入口（V2.0.36 极简版：构造函数只做 C 操作）
 
-static NSString *PGDiagStatus(void) {
-    NSMutableArray *a = [NSMutableArray array];
-    @try {
-        [a addObject:[NSString stringWithFormat:@"mainBundle=%@", [[NSBundle mainBundle] bundleIdentifier] ?: @"(null)"]];
-        NSArray *args = [[NSProcessInfo processInfo] arguments];
-        [a addObject:[NSString stringWithFormat:@"exe=%@", args.count ? args[0] : @"(?)"]];
-        [a addObject:[NSString stringWithFormat:@"resolved=%@", PGAppBundleID()]];
-        [a addObject:[NSString stringWithFormat:@"system=%@ selected=%@",
-                      PGIsSystemProcess() ? @"Y" : @"N",
-                      PGCurrentAppSelected() ? @"Y" : @"N"]];
-        [a addObject:[NSString stringWithFormat:@"sharedApp=%@", [UIApplication sharedApplication] ? @"Y" : @"N"]];
-    } @catch (NSException *e) { [a addObject:@"err"]; }
-    return [a componentsJoinedByString:@" "];
-}
+// V2.0.36：移除 PGDiagStatus() —— 它在构造函数期调用了 [UIApplication sharedApplication]，
+// 这是原神等游戏闪退的根因。所有诊断信息改为在 pg_install 时打印。
 
 __attribute__((constructor))
 static void PGInit(void) {
@@ -297,57 +282,78 @@ static void PGInit(void) {
         const char *exe = getprogname();
         if (!exe) return;
 
-        // C 层路径过滤：排除系统进程
+        // ===== C 层路径过滤（只读 C 字符串，不调用 ObjC）=====
         if (strncmp(exe, "/System", 7) == 0) return;
         if (strncmp(exe, "/usr", 4) == 0) return;
         if (strncmp(exe, "/bin", 4) == 0) return;
         if (strncmp(exe, "/sbin", 5) == 0) return;
         if (strncmp(exe, "/Library", 8) == 0) return;
         if (strstr(exe, "SpringBoard")) return;
-        if (strstr(exe, "/var/jb")) return;
+        // 注意：roothide 下路径是 .jbroot-XXXXX，不包含 /var/jb 字面量，不会被误杀
         if (strstr(exe, "/var/lib")) return;
         if (!strstr(exe, ".app/")) return;
 
-        // 初始化日志路径
+        // ===== 延迟初始化日志（用纯 C open/write，不崩）=====
         PGInitLogPath();
 
-        NSString *bid = PGAppBundleID();
-        PGLog([NSString stringWithFormat:@"constructor: bid=%@", bid].UTF8String);
-        PGLog([NSString stringWithFormat:@"diagnostics: %@", PGDiagStatus()].UTF8String);
+        // ===== 获取 bundleID（只读 C 字符串路径，不调 ObjC）=====
+        // 用 _dyld_get_image_name(0) 取可执行文件路径，手动解析 .app 前缀
+        NSString *bid = nil;
+        const char *m = _dyld_get_image_name(0);
+        if (m && m[0]) {
+            NSString *path = [NSString stringWithUTF8String:m];
+            // 形如: /var/containers/Bundle/Application/.jbroot-XXXX/Apps/Genshin.app/Genshin
+            // 找最后一个 .app/ 前缀
+            NSRange r = [path rangeOfString:@".app/"];
+            if (r.location != NSNotFound) {
+                NSString *appDir = [path substringToIndex:r.location + 5]; // ".app/"
+                // 向上取一级取 bundle name
+                NSString *bundleName = [[appDir stringByDeletingLastPathComponent] lastPathComponent];
+                // 常见格式: GenshinImpact.app → 尝试从 Info.plist 读 CFBundleIdentifier
+                NSString *plistPath = [appDir stringByAppendingPathComponent:@"Info.plist"];
+                NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+                if (info) bid = info[@"CFBundleIdentifier"];
+                if (!bid.length) bid = [bundleName stringByReplacingOccurrencesOfString:@".app" withString:@""];
+            }
+        }
+        if (!bid) bid = @"?";
 
-        // 越狱管理类 App：window 结构特殊，注入易崩，直接跳过
+        PGLog([NSString stringWithFormat:@"constructor: exe=%s bid=%@ path_filter=pass", exe, bid].UTF8String);
+
+        // ===== 越狱管理类 App：window 结构特殊，注入易崩，直接跳过 =====
         if ([bid isEqualToString:@"com.coolstar.SileoStore"] ||
             [bid isEqualToString:@"com.rile.ios.Sileo"] ||
             [bid isEqualToString:@"com.tigisoftware.Filza"] ||
             [bid isEqualToString:@"com.saurik.Cydia"] ||
             [bid isEqualToString:@"com.zebra.renati"] ||
             [bid hasPrefix:@"com.opa334."]) {
+            PGLog("constructor: jailbreak manager skipped");
             return;
         }
 
-        // ★ 关键：直接在构造函数期注册通知，不做懒加载
-        // 原因：PGLazyInit 模式会导致 didFinishLaunching 先于懒加载触发时
-        //       observer 永远不注册，窗口不创建 → 用户感知为"注入无效"
+        // ===== 系统 App 跳过（C 字符串比较）=====
+        if ([bid hasPrefix:@"com.apple."]) {
+            PGLog("constructor: system app skipped");
+            return;
+        }
 
-        // 注册设置变更通知
-        notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
+        // ===== 注册 notify token（纯 C 系统调用，不崩）=====
+        int ret = notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
             [[PGOverlay shared] pg_reload];
         });
+        if (ret != 0) {
+            PGLog([NSString stringWithFormat:@"notify_register failed: %d", ret].UTF8String);
+        }
 
-        // 多时机触发安装
-        void (^tryInstall)(void) = ^{
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [[PGOverlay shared] pg_install];
-            });
-        };
+        // ===== 注册通知 observer（必须在构造期完成，否则 didFinishLaunching 先触发时漏掉）=====
+        sObserverRegistered = YES;
 
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
             PGLog("notify: didFinishLaunching");
-            tryInstall();
+            [[PGOverlay shared] pg_install];
         }];
 
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
@@ -355,15 +361,18 @@ static void PGInit(void) {
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
             PGLog("notify: didBecomeActive");
-            tryInstall();
+            [[PGOverlay shared] pg_install];
         }];
 
-        // 兜底：dylib 在 App 已激活后才注入的情况
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+        // ===== 兜底：dylib 在 App 已激活后才注入的情况 =====
+        // V2.0.36：用 dispatch_after 延迟执行，此时 UIKit 已就绪
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            if (!sObserverRegistered) return;
+            // 此时 UIKit 已就绪，可以安全调用 sharedApplication
             UIApplication *app = [UIApplication sharedApplication];
             if (app && app.applicationState == UIApplicationStateActive) {
-                PGLog("delay: 2s fallback install");
+                PGLog("delay: 3s fallback install");
                 [[PGOverlay shared] pg_install];
             }
         });
