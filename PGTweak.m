@@ -112,15 +112,12 @@ static void PGInitLogPath(void) {
         UIApplication *app = [UIApplication sharedApplication];
         if (!app) return;
 
-        // 找合适的 window scene（安全访问：先判 windows 非空且 firstObject.windowScene 存在）
+        // 找合适的 window scene（v2.0.31 实机验证方案：直接枚举 app.windows）
         UIWindow *targetScene = nil;
-        if (@available(iOS 13.0, *)) {
-            UIWindow *firstWin = app.windows.firstObject;
-            if (firstWin && firstWin.windowScene) {
-                for (UIWindowScene *scene in firstWin.windowScene.connection.availableScenes) {
-                    targetScene = [[UIWindow alloc] initWithWindowScene:scene];
-                    break;
-                }
+        for (UIWindow *win in app.windows) {
+            if (win.windowScene) {
+                targetScene = [[UIWindow alloc] initWithWindowScene:win.windowScene];
+                break;
             }
         }
         if (!targetScene) {
