@@ -255,13 +255,15 @@ static void PGInitLogPath(void) {
         _infoView.alpha = 1.0;
         _infoView.transform = CGAffineTransformIdentity;
 
-        _token += 1;
-        NSInteger my = _token;
-        NSTimeInterval d = PGDuration();
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (my == _token) [self pg_hide];
-        });
+        if (!PGKeepOn()) {
+            _token += 1;
+            NSInteger my = _token;
+            NSTimeInterval d = PGDuration();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (my == _token) [self pg_hide];
+            });
+        }
     } @catch (NSException *e) {}
 }
 

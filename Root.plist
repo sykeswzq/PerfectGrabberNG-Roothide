@@ -59,6 +59,21 @@
 
 		<dict>
 			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>常驻显示</string>
+			<key>key</key>
+			<string>keepOn</string>
+			<key>defaults</key>
+			<string>com.sykes.perfectgrabberng</string>
+			<key>default</key>
+			<false/>
+			<key>PostNotification</key>
+			<string>com.sykes.perfectgrabberng.reload</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>注入范围</string>
