@@ -87,10 +87,10 @@ echo "$IDS" | grep -q "@loader_path/.jbroot" \
 
 ldid -M -S "$DL"
 ldid -M -S "$STAGE/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG"
-# 用 python3 替代 xxd（GitHub Actions 可能没有 xxd）
+# 用 python 替代 xxd（GitHub Actions 可能没有 xxd；macOS 默认是 python，不是 python3）
 for f in "$DL" \
          "$STAGE/Library/PreferenceBundles/PerfectGrabberNG.bundle/PerfectGrabberNG"; do
-  m="$(python3 -c "import sys;d=open(sys.argv[1],'rb').read(4);print(d.hex())" "$f")"
+  m="$(python -c "import sys;d=open(sys.argv[1],'rb').read(4);print(d.hex())" "$f")"
   [ "$m" = "cafebabe" ] || { echo "ERROR: $f Mach-O 头异常 magic=$m"; exit 1; }
 done
 # ★ filter 必须是 Bundles 白名单（不是 Classes 全局注入）。
