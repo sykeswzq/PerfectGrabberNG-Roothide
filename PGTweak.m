@@ -280,18 +280,21 @@ __attribute__((constructor))
 static void PGInit(void) {
     @autoreleasepool {
         const char *exe = getprogname();
-        if (!exe) return;
+        if (!exe) { PGLog("FATAL: getprogname returned NULL"); return; }
 
         // ===== C 层路径过滤（只读 C 字符串，不调用 ObjC）=====
-        if (strncmp(exe, "/System", 7) == 0) return;
-        if (strncmp(exe, "/usr", 4) == 0) return;
-        if (strncmp(exe, "/bin", 4) == 0) return;
-        if (strncmp(exe, "/sbin", 5) == 0) return;
-        if (strncmp(exe, "/Library", 8) == 0) return;
-        if (strstr(exe, "SpringBoard")) return;
-        // 注意：roothide 下路径是 .jbroot-XXXXX，不包含 /var/jb 字面量，不会被误杀
-        if (strstr(exe, "/var/lib")) return;
-        if (!strstr(exe, ".app/")) return;
+        PGLog([NSString stringWithFormat:@"constructor start: exe=%s", exe].UTF8String);
+
+        if (strncmp(exe, "/System", 7) == 0) { PGLog("skipped: /System path"); return; }
+        if (strncmp(exe, "/usr", 4) == 0) { PGLog("skipped: /usr path"); return; }
+        if (strncmp(exe, "/bin", 4) == 0) { PGLog("skipped: /bin path"); return; }
+        if (strncmp(exe, "/sbin", 5) == 0) { PGLog("skipped: /sbin path"); return; }
+        if (strncmp(exe, "/Library", 8) == 0) { PGLog("skipped: /Library path"); return; }
+        if (strstr(exe, "SpringBoard")) { PGLog("skipped: SpringBoard"); return; }
+        if (strstr(exe, "/var/lib")) { PGLog("skipped: /var/lib path"); return; }
+        if (!strstr(exe, ".app/")) { PGLog("skipped: no .app/ in path"); return; }
+
+        PGLog("path_filter: PASS");
 
         // ===== 延迟初始化日志（用纯 C open/write，不崩）=====
         PGInitLogPath();
@@ -302,6 +305,7 @@ static void PGInit(void) {
         const char *m = _dyld_get_image_name(0);
         if (m && m[0]) {
             NSString *path = [NSString stringWithUTF8String:m];
+            PGLog([NSString stringWithFormat:@"dyld image: %s", m].UTF8String);
             // 形如: /var/containers/Bundle/Application/.jbroot-XXXX/Apps/Genshin.app/Genshin
             // 找最后一个 .app/ 前缀
             NSRange r = [path rangeOfString:@".app/"];
@@ -309,12 +313,18 @@ static void PGInit(void) {
                 NSString *appDir = [path substringToIndex:r.location + 5]; // ".app/"
                 // 向上取一级取 bundle name
                 NSString *bundleName = [[appDir stringByDeletingLastPathComponent] lastPathComponent];
+                PGLog([NSString stringWithFormat:@"appDir: %@, bundleName: %@", appDir, bundleName].UTF8String);
                 // 常见格式: GenshinImpact.app → 尝试从 Info.plist 读 CFBundleIdentifier
                 NSString *plistPath = [appDir stringByAppendingPathComponent:@"Info.plist"];
                 NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
                 if (info) bid = info[@"CFBundleIdentifier"];
                 if (!bid.length) bid = [bundleName stringByReplacingOccurrencesOfString:@".app" withString:@""];
+                PGLog([NSString stringWithFormat:@"resolved bid: %@", bid].UTF8String);
+            } else {
+                PGLog("WARNING: no .app/ found in path");
             }
+        } else {
+            PGLog("WARNING: _dyld_get_image_name(0) returned NULL");
         }
         if (!bid) bid = @"?";
 
@@ -337,12 +347,17 @@ static void PGInit(void) {
             return;
         }
 
+        PGLog("passed all filters, registering observers...");
+
         // ===== 注册 notify token（纯 C 系统调用，不崩）=====
         int ret = notify_register_dispatch(PGNotifyName, &sNotifyToken, dispatch_get_main_queue(), ^(int t) {
+            PGLog("notify: reload triggered");
             [[PGOverlay shared] pg_reload];
         });
         if (ret != 0) {
             PGLog([NSString stringWithFormat:@"notify_register failed: %d", ret].UTF8String);
+        } else {
+            PGLog([NSString stringWithFormat:@"notify_register success: token=%d", sNotifyToken].UTF8String);
         }
 
         // ===== 注册通知 observer（必须在构造期完成，否则 didFinishLaunching 先触发时漏掉）=====
@@ -352,29 +367,47 @@ static void PGInit(void) {
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
-            PGLog("notify: didFinishLaunching");
-            [[PGOverlay shared] pg_install];
+            PGLog("notify: UIApplicationDidFinishLaunchingNotification");
+            @try {
+                [[PGOverlay shared] pg_install];
+            } @catch (NSException *e) {
+                PGLog([NSString stringWithFormat:@"didFinishLaunching ERROR: %@", e.reason].UTF8String);
+            }
         }];
+        PGLog("registered didFinishLaunching observer");
 
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(NSNotification *note) {
-            PGLog("notify: didBecomeActive");
-            [[PGOverlay shared] pg_install];
+            PGLog("notify: UIApplicationDidBecomeActiveNotification");
+            @try {
+                [[PGOverlay shared] pg_install];
+            } @catch (NSException *e) {
+                PGLog([NSString stringWithFormat:@"didBecomeActive ERROR: %@", e.reason].UTF8String);
+            }
         }];
+        PGLog("registered didBecomeActive observer");
 
         // ===== 兜底：dylib 在 App 已激活后才注入的情况 =====
         // V2.0.36：用 dispatch_after 延迟执行，此时 UIKit 已就绪
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (!sObserverRegistered) return;
+            if (!sObserverRegistered) { PGLog("delay: skipped (observer unregistered)"); return; }
             // 此时 UIKit 已就绪，可以安全调用 sharedApplication
             UIApplication *app = [UIApplication sharedApplication];
             if (app && app.applicationState == UIApplicationStateActive) {
-                PGLog("delay: 3s fallback install");
-                [[PGOverlay shared] pg_install];
+                PGLog("delay: 3s fallback install (app active)");
+                @try {
+                    [[PGOverlay shared] pg_install];
+                } @catch (NSException *e) {
+                    PGLog([NSString stringWithFormat:@"3s fallback ERROR: %@", e.reason].UTF8String);
+                }
+            } else {
+                PGLog("delay: 3s fallback skipped (app not active)");
             }
         });
+
+        PGLog("constructor complete: all observers registered");
     }
 }
