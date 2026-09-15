@@ -94,3 +94,17 @@ jobs:
           name: perfectgrabberng-deb
           path: "*.deb"
           retention-days: 30
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "*.deb"
+          tag_name: v${{ steps.get_version.outputs.VER }}
+          name: PerfectGrabberNG v${{ steps.get_version.outputs.VER }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version
+        id: get_version
+        run: echo "VER=$(grep '^VER=' build.sh | cut -d= -f2)" >> "$GITHUB_OUTPUT"
